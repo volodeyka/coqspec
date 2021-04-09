@@ -10,3 +10,4 @@
 -arg -w -arg -ambiguous-paths
 
 int.v
+dev.v

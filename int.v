@@ -50,12 +50,16 @@ Coercion Exp_Arg : Arg >-> Exp.
 Fixpoint eq_exp a b := 
   match a, b with
   | Exp_Arg a,  Exp_Arg b  => a == b
-  | CONS e1 e2, CONS e3 e4 => eq_exp e1 e4 && eq_exp e2 e4
+  | CONS e1 e2, CONS e3 e4 => eq_exp e1 e3 && eq_exp e2 e4
   | _,          _          => false
   end.
 
 Lemma eqexpP : Equality.axiom eq_exp.
-Proof. Admitted.
+Proof.
+elim=> [?[]*|? IHe1 ? IHe2[]]/= *; first by apply/(iffP eqP)=> [|[]]//->.
+1,2: by constructor.
+by apply/(iffP andP)=> [][]/IHe1->/IHe2->.
+Qed.
 
 Canonical exp_eqMixin := EqMixin eqexpP.
 Canonical exp_eqType := Eval hnf in EqType Exp exp_eqMixin.
@@ -73,24 +77,6 @@ Inductive Tree :=
 Coercion RET : Exp >-> Tree.
 
 Inductive Prog := DEFINE of FName & seq Var & Tree.
-
-(*Inductive Const :=
-  | Const_Val of Val
-  | CCONS of Const & Const.
-Coercion Const_Val : Val >-> Const.
-
-Fixpoint ExpConst (e : Exp) : Const :=
-  match e with
-  | CONS e1 e2 => CCONS (ExpConst e1) (ExpConst e2)
-  | 'a         => 'a
-  | VAR a      => 'a
-  end.
-
-Fixpoint ConstExp (c : Const) : Exp :=
-  match c with
-  | CCONS c1 c2 => CONS (ConstExp c1) (ConstExp c2)
-  | 'a          => 'a 
-  end.*)
 
 Definition Bind := (Var * Exp)%type.
 Notation "b ↦ c" := (b, c) (at level 100).
@@ -175,7 +161,8 @@ Fixpoint FVTree (t : Tree) : seq Var :=
   end.
 
 Lemma closed_subs e env: 
-  {subset FVExp e <= [seq i.1 | i <- env]} -> all closed [seq x.2 | x <- env] -> closed e /s/ env.
+  {subset FVExp e <= [seq i.1 | i <- env]} -> 
+  all closed [seq x.2 | x <- env] -> closed e /s/ env.
 Proof.
 elim: e=> [[[]|[]]|]//=.
 - rewrite /subst=> n H /allP; apply.
@@ -243,8 +230,13 @@ Qed.
 
 Theorem closed_int_Prog t vs f e: 
   all closed e -> size vs = size e ->
+  {subset FVTree t <= vs} ->
   closed (int_Prog (DEFINE f vs t) e).
-Proof. Admitted.
+Proof.
+move=> /= ? E S; apply/closed_int=> [?|].
+- rewrite -/unzip1 unzip1_zip ?E ?leqnn=> [/S|] //.
+by rewrite -/unzip2 unzip2_zip ?E ?leqnn.
+Qed.
 
 
 
