@@ -97,15 +97,16 @@ Definition exp_choiceMixin := [derive choiceMixin for Exp].
 Canonical exp_choiceType := Eval hnf in ChoiceType Exp exp_choiceMixin.
 
 Inductive Cntr :=
-  | CONStest : Arg -> forall (v u : Var), v != u -> Cntr
+  | CONStest of Arg
   | ATOMtest of Exp & Exp.
-Notation "'CONS?'" := (CONStest) (only parsing).
+Notation "CONS?" := (CONStest) (only parsing).
 Notation "'EQA?'"  := (ATOMtest) (only parsing).
 
 Inductive Tree := 
   | RET  of Exp
   | LET  of Var  & Exp  & Tree
-  | COND of Cntr & Tree & Tree.
+  | COND of Cntr & Tree & Tree
+  | HT   : forall (u v : Var), (u != v) -> Var -> Tree -> Tree.
 Coercion RET : Exp >-> Tree.
 
 Inductive Prog := DEFINE of FName & seq Var & Tree.
@@ -125,7 +126,7 @@ Fixpoint subst (e : Exp) (env : Env) : Exp :=
   | (Exp_Arg (Arg_Var v))      =>  env v 
   end.
 
-Notation "e '/s/' env" := (subst e env) (at level 0).
+Notation "e '/s/' env" := (subst e env) (at level 1, left associativity).
 
 Arguments subst : simpl nomatch.
 
@@ -143,7 +144,6 @@ Definition comp (e1 e2 : Env) : Env :=
 Definition emsub : Env := [fsfun for (id : Var -> Exp)].
 
 
-
 Definition cntr (c : Cntr) (e : Env) : Branch := 
   match c with
   | EQA? x y    => 
@@ -151,25 +151,27 @@ Definition cntr (c : Cntr) (e : Env) : Branch :=
     | Arg_Val 'a, Arg_Val 'b => if a == b then TRUE e else FALSE e
     | _, _ => ERR
     end
-  | CONS? x h t _ => 
-    let: e := [fsfun e with h |-> Exp_Arg '0, t |-> Exp_Arg '0] in
-    if x /s/ e is CONS a b then
-      TRUE (comp [fsfun emsub with h |-> a, t |-> b] e)
+  | CONS? x =>
+    if x /s/ e is CONS a _ then
+      TRUE e
     else FALSE e
   end.
-
 
 Fixpoint int (t : Tree) (e : Env) : Exp := 
   match t with
   | RET x         => subst x e
   | LET v x t     => 
-    int t  [fsfun e with v |-> x /s/ [fsfun e with v |-> Exp_Arg '0]]
+    int t  [fsfun e with v |-> x /s/ e]
   | COND c t' t'' => 
     match cntr c e with
     | TRUE e'   => int t'  e'
     | FALSE e'' => int t'' e''
     | ERR       => '0
     end
+  | HT v u pf x t => 
+    if x /s/ e is CONS a b then 
+      int t [fsfun e with v |-> a, u |-> b]
+    else '0
   end.
 
 Definition fmap_of (ks : seq Var) (vs : seq Exp) : Env :=
@@ -202,7 +204,7 @@ Proof. Admitted.
 Fixpoint FVExp (e : Exp) : {fset Var} := 
   match e with
   | CONS e1 e2 => FVExp e1 `|` FVExp e2
-  | VAR v      => [fset VAR v]
+  | (Exp_Arg (Arg_Var v))      => [fset v]
   | _          => fset0
   end.
 
@@ -214,7 +216,7 @@ Definition FVArg (a : Arg) :=
 Definition FVCntr (c : Cntr) : {fset Var} := 
   match c with
   | EQA? x y => FVExp x `|` FVExp y
-  | CONS? x h t _ => h |` (t |` FVArg x)
+  | CONS? x  => FVArg x
   end.
 
 Fixpoint FVTree (t : Tree) : {fset Var} :=
@@ -222,6 +224,7 @@ Fixpoint FVTree (t : Tree) : {fset Var} :=
   | RET e        => FVExp e
   | LET v x t    => (FVExp x `|` FVTree t) `\ v
   | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
+  | HT v u pf x t     => (FVExp x `|` FVTree t) `\ v `\ u
   end.
 
 Definition closed_sub (e : Env) := 
@@ -241,10 +244,13 @@ Qed.*)
 Admitted.
 
 Lemma cntr_env_TRUE c env e: 
-  cntr c env = TRUE e -> closed_sub env -> 
-  (closed_sub e) * 
-  (finsupp env `<=` finsupp e).
-Proof. Admitted.
+  cntr c env = TRUE e ->
+  (env = e).
+Proof.
+case: c=> /= [?|??]; case: (_ /s/ env)=> //.
+- by move=> ?? [].
+by case=> // [[]] ?; case: (_ /s/ _)=> // [[]] // [] ?; case: ifP=> // ? [].
+Qed.
 (*case: c=> [/= a v u |/= ??].
 - case: a; rewrite /subst=> [[]]; first move=> []//.
   move=> n; case: (boolP (VAR n \in domf env))=>[L|/not_fnd->//].
@@ -260,12 +266,12 @@ by case: ifP=> // ? [->].
 Qed.*)
 
 Lemma cntr_env_FALSE c env e: 
-  cntr c env = FALSE e -> e == env.
-Proof. Admitted.
-(*case: c=> [/= >|/= ??]; case (_ /s/ _)=> //; first by move=> ?[->].
+  cntr c env = FALSE e -> e = env.
+Proof. 
+case: c=> [/= >|/= ??]; case (_ /s/ _)=> //; first by move=> ?[->].
 case=> //[][]. case: (_ /s/ _)=> //[][]//[] ??.
 by case:ifP=> // ?[->].
-Qed.*)
+Qed.
 
 Lemma closed_int t e: 
   FVTree t `<=` finsupp e -> 

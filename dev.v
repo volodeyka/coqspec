@@ -6,13 +6,18 @@ From coqspec Require Import int.
 Set Implicit Arguments.
 Unset Printing Implicit Defensive.
 
-Inductive Restr := Neq of Exp & Exp.
+Inductive Restr := 
+  | Neq of Arg & Arg
+  | NCONS of Arg.
 
 Definition restr_indDef := [indDef for Restr_rect].
 Canonical restr_indType := IndType Restr restr_indDef.
 
 Definition restr_eqMixin := [derive eqMixin for Restr].
 Canonical restr_eqType := Eval hnf in EqType Restr restr_eqMixin.
+
+Definition restr_choiceMixin := [derive choiceMixin for Restr].
+Canonical restr_choiceType := Eval hnf in ChoiceType Restr restr_choiceMixin.
 
 Definition br_indDef := [indDef for Branch_rect].
 Canonical br_indType := IndType Branch br_indDef.
@@ -24,47 +29,77 @@ Notation "e1 '≠' e2" := (Neq e1 e2) (at level 10).
 
 Definition Cenv := (Env * seq Restr)%type.
 
-Definition contr (r : Restr) := 
-  match r with
-  | (Arg_Var v) ≠ (Arg_Var u)   => v == u
-  | (Arg_Val 'v) ≠ (Arg_Val 'u) => v == u
-  | (CONS _ _) ≠   (CONS _ _)   => true
-  | _                           => false
+Inductive Bind :=
+  | isEQ of Arg & Arg
+  | isCONS of Arg.
+
+Definition contr  (b : Bind) (r : Restr) := 
+  match r, b with
+  | v ≠ u, isEQ v' u' => ((v, u) == (v', u')) || ((u, v) == (v', u'))
+  | NCONS v, isCONS u => v == u
+  | _, _              => false
   end.
 
+Definition is_arg (e : Exp) := 
+  if e is Exp_Arg _ then true else false.
+
+Definition is_cons (e : Exp) := 
+  if e is CONS _ _ then true else false.
+
+
+Definition ncontr_neq env r1 r2 := 
+    is_arg (r1 /s/ env) ->
+    is_arg (r2 /s/ env) ->
+    r1 /s/ env <> r2 /s/ env.
+
+Definition ncontr_ncons env r := 
+  ~~ is_cons (r /s/ env).
+
+
+Definition ncontr_env (env : Env) (rs : seq Restr) := 
+  (forall r1 r2, r1 ≠ r2 \in rs -> ncontr_neq env r1 r2) /\
+  (forall r, NCONS r \in rs -> ncontr_ncons env r).
+
+
+Definition contradict r b : bool :=
+  has (contr b) r .
+
 Definition delete_restr (v : Var) := 
-  filter (fun '(r ≠ r') => (r != v) && (r' != v)).
+  filter (fun r => match r with 
+                   | (r1 ≠ r2) => (r1 != v) && (r2 != v)
+                   | NCONS r => r != v
+                  end).
+
+Definition cas  (v u : Arg) (r : Restr) := 
+  if r is x ≠ y then 
+    (if x == v then u else x) ≠ (if y == v then u else y)
+  else r.
 
 
-Definition contradict r : bool :=
-  has contr r.
+Definition rsubst (r : seq Restr) (b : Bind) : seq Restr := 
+  match b with 
+  | isEQ u v => map (cas u v) r
+  | isCONS _ => r
+  end.
 
-(*Definition extend (c : Cenv) (b : Env) := 
-  let: (e, r) := c in (e + b, r).*)
-
-
-Definition rsubst (r : seq Restr) (e : Env) : seq Restr := 
-  map (fun '(r1 ≠ r2) => r1 /s/ e ≠ r2 /s/ e) r.
-
-Inductive Bind := BIND of Var & Exp.
-Notation "v ↦ e" := (BIND v e) (at level 20).
-
-Definition extend (c : Cenv) (b : Bind) : Cenv := 
-  let: (ce, rs) := c in
-  let: (v ↦ e)  := b in
-  ([fsfun ce with v |-> e], rs).
-
-Definition of_Bind : Bind -> Env := 
-  fun '(k ↦ e) => [fsfun emsub with k |-> e].
+Definition of_Bind b : Env := 
+  match b with 
+  | isEQ (Arg_Var u) v => [fsfun emsub with u |-> Exp_Arg v]
+  | _                  => emsub
+  end.
 
 Coercion of_Bind : Bind >-> Env.
 
-Definition b2r : Bind -> Restr := fun '(a ↦ b) => a ≠ b.
+Definition b2r b : Restr := 
+  match b with
+  | isEQ u v => u ≠ v
+  | isCONS u => NCONS u
+  end.
 Coercion b2r : Bind >-> Restr.
 
-Definition csubst (c : Cenv) (e : Env) := 
+Definition csubst (c : Cenv) (e : Bind) := 
   let: (ce, r) := c in
-  (comp e ce, rsubst r e).
+  (comp ce e, rsubst r e).
 
 Definition restr (c : Cenv) (b : Bind) := 
   let: (e, r) := c in (e, b2r b :: r).
@@ -74,12 +109,12 @@ Inductive CBranch :=
   | CFALSE of Cenv
   | CBOTH  of Cntr & Cenv & Cenv.
 
-Definition both (c : Cntr) (te fe : Cenv) (b : Bind) :=
-  let: e1 := csubst te b in
-  let: e2 := restr  fe b in
-  if contradict e1.2 then
-    CFALSE e2
-  else CBOTH c e1 e2.
+Definition both (c : Cntr) (ce : Cenv) (b : Bind) :=
+  let: (e, rs) := ce in
+  if contradict rs b then
+    CFALSE (restr ce b)
+  else CBOTH c (csubst ce b) (restr ce b).
+
 
 Definition dev_cntr (c : Cntr) (ce : Cenv) : CBranch :=
   match c with
@@ -91,35 +126,38 @@ Definition dev_cntr (c : Cntr) (ce : Cenv) : CBranch :=
     | Arg_Var a,  Arg_Var b  => 
       if a == b then 
         CTRUE ce 
-      else both (EQA? (Arg_Var a) (Arg_Var b)) ce ce (a ↦ b)
+      else both (EQA? (Arg_Var a) (Arg_Var b)) ce (isEQ a b)
     | Arg_Var v,  Arg_Val u  => 
-      both (EQA? (Arg_Var v) (Arg_Val u)) ce ce (v ↦ y')
+      both (EQA? (Arg_Var v) (Arg_Val u)) ce (isEQ v u)
     | Arg_Val u,  Arg_Var v  => 
-      both (EQA? (Arg_Val u) (Arg_Var v)) ce ce (v ↦ x')
+      both (EQA? (Arg_Val u) (Arg_Var v)) ce (isEQ v u)
     | _, _                   => CBOTH (EQA? x' y') ce ce
     end
-  | CONS? x h t pf =>
-    let: e := extend (extend ce (t ↦ '0)) (h ↦ '0) in
-    let: x' := x /s/ (e.1) in
+  | CONS? x =>
+    let: x' := x /s/ (ce.1) in
     match x' with
-    | CONS a b  => CTRUE 
-      (extend (extend e (t ↦ b)) (h ↦ a))
-    | Arg_Val _ => CFALSE e
-    | Arg_Var v => 
-       let (e0, rs) := e in
-       both (CONS? v h t pf)
-        ([fsfun e0 with h |->  Exp_Arg h, t |-> Exp_Arg t],
-        delete_restr t (delete_restr h rs))
-        ce
-        (v ↦ CONS h t)
+    | CONS a b  => CTRUE ce
+    | Arg_Val _ => CFALSE ce
+    | Arg_Var v => both (CONS? v) ce (isCONS v)
     end
   end.
+
 
 Fixpoint dev (t : Tree) (e : Cenv) : Tree :=
   match t with
   | RET x        => x /s/ (e.1)
-  | LET v x t    => 
-    dev t (extend e (v ↦ x /s/ ([fsfun e.1 with v |-> Exp_Arg '0])))
+  | LET v x t    => let (e, rs) := e in
+    dev t ([fsfun e with v |-> x /s/ e], rs)
+  | HT v u pf x t    => let (e, rs) := e in
+    match x /s/ e with
+    | CONS a b =>
+      dev t ([fsfun e with v |-> a, u |-> b], rs)
+    | Arg_Var y => 
+      HT v u pf y (
+        dev t ([fsfun e with x |-> CONS v u, v |-> Exp_Arg v, u |-> Exp_Arg u], rs)
+      )
+    | _ => RET '0
+    end
   | COND c t1 t2 => 
     match dev_cntr c e with
     | CTRUE e       => dev t1 e
@@ -173,10 +211,6 @@ rewrite /comp fsfunE; case: ifP=> //= /negbT.
 by rewrite inE negb_or => /andP[??]; rewrite fsfun_dflt //= fsfun_dflt.
 Qed.
 
-Lemma comp_var e1 e2 v : comp e1 e2 v = (e1 v) /s/ e2.
-Proof. Admitted.
-
-
 Lemma comp0e e1: comp emsub e1 = e1.
 Proof. by apply/substE=> v; rewrite comp_env /= emsubv. Qed.
 
@@ -188,325 +222,357 @@ Qed.
 
 Lemma compA e1 e2 e3 : comp e1 (comp e2 e3) = comp (comp e1 e2) e3.
 Proof. by apply/substE=> ?; rewrite ?comp_env. Qed.
-  
+
 Lemma subst_var (v u : Var) (e : Exp): 
   v /s/ ([fsfun emsub with u |-> e]) = if v == u then e else v.
 Proof. by rewrite /= fsfun_withE emsubv. Qed.
 
-Lemma rsubst2 rs e1 e2: 
- rsubst (rsubst rs e1) e2 = rsubst rs (comp e1 e2).
-Proof.
-rewrite /rsubst -map_comp/=; apply eq_map=> [[]]/=*; by rewrite -?comp_env.
-Qed. 
-
-Lemma contradict_rsubstP e1 rs: 
-  reflect 
-  (exists r1 r2, ((r1 ≠ r2) \in rs) * (contr (r1 /s/ e1 ≠ r2 /s/ e1)))%type
-  (contradict (rsubst rs e1)).
-Proof.
-apply/(equivP hasP); split=> [[[?? /mapP[[r1 r2 ? -> ?]]]]|[r1 [r2 [*]]]].
-- by exists r1, r2.
-exists (r1 /s/ e1 ≠ r2 /s/ e1)=> //; by apply/mapP; exists (r1 ≠ r2).
-Qed.
-
-Lemma Ncontradict_rsubstP e1 rs: 
-  reflect 
-  (forall r1 r2, ((r1 ≠ r2) \in rs) -> (~~ contr (r1 /s/ e1 ≠ r2 /s/ e1)))%type
-  (~~ contradict (rsubst rs e1)).
-Proof.
-apply/(equivP hasPn); split=> [R r1 r2 ?|R [r1 r2 /mapP[[e e0 /R + ->]]]]//.
-by apply/R/mapP; exists (r1 ≠ r2).
-Qed.
-
-Lemma contradict_rsubst {e1 rs}: 
-  ~~ contradict (rsubst rs e1) ->
-  ~~ contradict rs.
-Proof.
-move/Ncontradict_rsubstP=> C; apply/hasPn=> [[++/C]].
-case=> [[[]?[[[]|]|]|u[[]|]]|??[]]// v.
-case: (boolP (u == v))=> [|/negbTE/=->]// /eqP->/=.
-case: (e1 v)=> // [[[]|]] ?; by rewrite eq_refl.
-Qed.
-
-Lemma subst_with e1 e2 e3:
-  closed_sub e2 -> 
-  finsupp e3 `<=` finsupp e2 ->
-  e1 /s/ e2 = (e1 /s/ e2) /s/ e3.
-Proof.
-move=> C /fsubsetP V.
-rewrite -[(e1 /s/ e2) /s/ e3]/((fun x => (x /s/ e2) /s/ e3) e1).
-apply/substP=> //= v.
-case: (boolP (v \in finsupp e2))=> [/C|/[dup] /negP N N'].
-- elim: (e2 v)=> [[[]|[]n /eqP/(congr1 (fun x => #|` x|))]|]//=.
-- by rewrite cardfs1.
-- move=> ? IHe1 ? IHe2. 
-  by rewrite /closed /= fsetU_eq0=> /andP[]/IHe1{1}->/IHe2{1}->.
-by rewrite fsfun_dflt //=  fsfun_dflt //; apply/negP=> /V /N.
-Qed.
-
-Lemma emsub_with (v : Var) : [fsfun emsub with v |-> Exp_Arg v] = emsub.
-Proof.
-by apply/substE=> /= ?; rewrite fsfun_withE emsubv; case: ifP=> [/eqP->|].
-Qed.
-
-Lemma sub_emsub e : e /s/ emsub = e.
-Proof. rewrite -[e]/(id e); apply/substP=> //; exact/emsubv. Qed.
-
-
 End SubstTh.
 
-Lemma contr_symm r1 r2: 
-  contr (r1 ≠ r2) = contr (r2 ≠ r1).
+Definition FVRestr (r : Restr) : {fset Var} := 
+  match r with
+  | NCONS v => FVArg v
+  | r1 ≠ r2 => FVArg r1 `|` FVArg r2
+  end.
+
+Section FreeValTh.
+
+Definition whole (e : Cenv) : {fset Var} :=
+  [fset x | a in finsupp e.1, x in FVExp (e.1 a)] `|`
+  [fset x | a in e.2, x in FVRestr a].
+
+Lemma whole_subst (env : Env) (rs : seq Restr) (e : Exp): 
+  FVExp (e /s/ env) `<=` FVExp e `|` whole (env, rs).
+Proof. Admitted.
+
+Lemma whole_restr {e rs r}: 
+  whole (e, r :: rs) = FVRestr r `|` whole (e, rs).
+Proof. Admitted.
+
+Lemma whole_with {env : Env} {v : Var} {e : Exp} {rs}: 
+  whole ([fsfun env with v |-> e], rs) `<=` v |` (FVExp e) `|` whole (env, rs).
+Proof. Admitted.
+
+Lemma whole_comp {env : Env} {v : Var} {e : Exp} {rs}: 
+  whole (comp env [fsfun emsub with v |-> e], rs) `<=` v |` (FVExp e) `|` whole (env, rs).
+Proof. Admitted.
+
+Lemma whole_cas {v a env rs}: 
+  whole (env, [seq cas v a i | i <- rs]) `<=`
+  FVArg a `|` whole (env, rs).
+Proof. Admitted.
+
+Lemma whole_var (env : Env) (e : Exp) (v : Var) rs: 
+  e /s/ env = v -> 
+  v \in FVExp e `|` whole (env, rs).
+Proof. Admitted.
+
+(*Lemma fv_env e env : 
+  FVExp (e /s/ env) `<=` 
+  FVExp e `|` [fset x | a in finsupp env, x in FVExp (env a)] .
 Proof.
-case: r1 r2=> [[[]|]|??[[[]|]|]]//.
-- move=> ? []// [[]|] // ? /=; exact/esym.
-move=> ? []// [[]|]// ? /=; exact/esym.
+elim: e=> [[[]?|[]]|] /=.
+- 
+Qed.*)
+
+Lemma FVExp_var (v : Var): FVExp v = [fset v].
+Proof. by case: v. Qed.
+
+Definition aux (e : Env) (f : {fset Var}): {fset Var} . Admitted.
+
+Lemma aux_CONS e a: 
+  aux e (FVCntr (CONS? a)) = FVExp (a /s/ e).
+Proof. Admitted.
+
+Lemma aux_EQA e a1 a2: 
+  aux e (FVCntr (EQA? a1 a2)) = FVExp (a1 /s/ e) `|` FVExp (a2 /s/ e).
+Proof. Admitted.
+
+Lemma auxE e c rs: 
+  aux e (FVCntr c) `<=` FVCntr c `|` whole (e, rs).
+Proof. Admitted.
+
+Lemma memNwhole rs v env env'  e1 u: 
+  u \notin whole (env, rs) ->
+  (v == u) = false ->
+  (env v) /s/ [fsfun env' with u |-> e1] = 
+  (env v) /s/ env'.
+Proof. Admitted.
+
+Lemma whole_cons rs (env : Env) (v : Var) e1 e2: 
+  env v = CONS e1 e2 -> 
+  ((FVExp e1 `<=` whole (env, rs)) * (FVExp e2 `<=` whole (env, rs)))%type.
+Proof. Admitted.
+
+Lemma FVExp_cons (v u : Var) : FVExp (CONS u v) = [fset u; v].
+Proof. by case: u; case: v. Qed.
+
+Lemma comp_var (v : Var) env env': 
+  comp env env' v = (env v) /s/ env'.
+Proof. by rewrite -[comp env env' v]/(v /s/ (comp env env')) comp_env. Qed.
+
+End FreeValTh.
+
+Section ContradictTh.
+
+Lemma cont_isCONS rs v: contradict rs (isCONS v) = (NCONS v \in rs).
+Proof.
+elim: rs=> //= a ?; rewrite inE /contr; case: a=> // a ->; apply/orb_id2r=> ?.
+by apply/(sameP _ eqP)/(iffP eqP)=> [|[]]->.
 Qed.
 
-Lemma contrrr r: 
-  contr (r ≠ r).
-Proof. by case: r=> // [[[]|]] ? /=; rewrite eq_refl. Qed.
-
-Lemma NCTRUEboth c e1 e2 b e3 :
-  ~ both c e1 e2 b = CTRUE e3.
-Proof. by rewrite /both; case: ifP. Qed.
-
-Lemma contradict_ATOM {v : Var} {u : Arg} {e1 e2 rs e}: 
-  ~~ (contradict (rsubst rs e2)) ->
-  both (EQA? v u) (e1, rs) (e1, rs) (v ↦ u) = CFALSE e ->
-  (~~ contr (v /s/ e2 ≠ (u /s/ e2)) * (e = (e1, v ≠ u :: rs))).
-Proof.
-rewrite /both; case: ifP=> // [++[->]].
-case/contradict_rsubstP=> r1 [r2 [++ /Ncontradict_rsubstP I]].
-move: r1 r2=> ++ /I.
-case=> [[[]|]|??[[[]|?]|]]//; rewrite ?subst_var; last by case: ifP.
-- move=> a [] // [[]/=? /negbTE->|] // ?; rewrite subst_var; case: ifP=> //= /eqP->.
-  case: u=> // [[? + /eqP <-]] //=; case: (e2 v)=> // [[]] // [?]; by rewrite eq_sym.
-move=> ? [[[]|]|]//; last (rewrite subst_var; case: ifP=> // /eqP->).
-- case: u=> [|??]; last by (rewrite subst_var; case: ifP).
-  by move=> []??; rewrite subst_var; case: ifP=> // /eqP-> /[swap] /eqP->.
-  move=> ?; rewrite ?subst_var; case: ifP; case: ifP=> //.
-  - by move/eqP->=> /eqP->; rewrite contrrr.
-  - by move=> ? /eqP->; case: u=> [[]|]// ?? /eqP->.
-  - by move/eqP->; case: u=> [[]|]// ? ? + /eqP<-; rewrite contr_symm.
-  by move=> +++ /eqP E; rewrite E contrrr.
-by case: u=> // [[]]//.
+Lemma cont_isEQ rs v u: 
+  reflect (exists r1 r2, r1 ≠ r2 \in rs /\
+  ((r1, r2) = (v, u) \/ (r2, r1) = (v, u)))
+  (contradict rs (isEQ v u)).
+Proof. 
+apply/(iffP hasP)=> [[[]//= r1 r2 ?]|[r1 [r2 [?]]]] /pred2P ?.
+- by exists r1, r2.
+by exists (r1 ≠ r2).
 Qed.
 
-Lemma contradict_ATOM' {v : Var} {u : Arg} {e1 e2 rs e}: 
-  ~~ (contradict (rsubst rs e2)) ->
-  both (EQA? u v) (e1, rs) (e1, rs) (v ↦ u) = CFALSE e ->
-  (~~ contr (v /s/ e2 ≠ (u /s/ e2)) * (e = (e1, v ≠ u :: rs))).
+Lemma Ncont_isEQ rs v u: 
+  reflect (forall r1 r2, r1 ≠ r2 \in rs ->
+  ((r1, r2) <> (v, u) /\ (r2, r1) <> (v, u)))
+  (~~ (contradict rs (isEQ v u))).
 Proof.
-rewrite /both; case: ifP=> // [++[->]].
-case/contradict_rsubstP=> r1 [r2 [++ /Ncontradict_rsubstP I]].
-move: r1 r2=> ++ /I.
-case=> [[[]|]|??[[[]|?]|]]//; rewrite ?subst_var; last by case: ifP.
-- move=> a [] // [[]/=? /negbTE->|] // ?; rewrite subst_var; case: ifP=> //= /eqP->.
-  case: u=> // [[? + /eqP <-]] //=; case: (e2 v)=> // [[]] // [?]; by rewrite eq_sym.
-move=> ? [[[]|]|]//; last (rewrite subst_var; case: ifP=> // /eqP->).
-- case: u=> [|??]; last by (rewrite subst_var; case: ifP).
-  by move=> []??; rewrite subst_var; case: ifP=> // /eqP-> /[swap] /eqP->.
-  move=> ?; rewrite ?subst_var; case: ifP; case: ifP=> //.
-  - by move/eqP->=> /eqP->; rewrite contrrr.
-  - by move=> ? /eqP->; case: u=> [[]|]// ?? /eqP->.
-  - by move/eqP->; case: u=> [[]|]// ? ? + /eqP<-; rewrite contr_symm.
-  by move=> +++ /eqP E; rewrite E contrrr.
-by case: u=> // [[]]//.
+apply/(iffP hasPn)=> [H ?? /H|H []// ?? /H[/eqP/[swap]/eqP]]; rewrite negb_or.
+- by case/andP=>/eqP?/eqP.
+by move->=>->.
+Qed. 
+
+Lemma ncontr_cons e rs v: 
+  ncontr_env e (NCONS v :: rs) <->
+  (ncontr_env e rs /\ ncontr_ncons e v).
+Proof.
+split=> [][] H1 H2; do ?split.
+- by move=> ?? I; apply/H1; rewrite ?inE I orbT.
+- by move=> ? I; apply/H2; rewrite ?inE I orbT.
+- by apply/H2; rewrite ?inE eq_refl.
+- by move=> ??; rewrite inE=> /orP[]//; case: H1=> H ? /H.
+by move=> ?; rewrite inE=> /orP[/eqP[->]|]//; case: H1=> ? H /H.
 Qed.
+
+Lemma ncontr_eq e rs v u: 
+  ncontr_env e (v ≠ u :: rs) =
+  (ncontr_env e rs /\ ncontr_neq e v u).
+Proof.
+(*split=> [][] H1 H2; do ?split.
+- by move=> ?? I; apply/H1; rewrite ?inE I orbT.
+- by move=> ? I; apply/H2; rewrite ?inE I orbT.
+- by apply/H2; rewrite ?inE eq_refl.*) Admitted.
+
+Lemma ncontr_whole env' env v rs e: 
+  v \notin whole (env', rs) ->
+  ncontr_env env rs ->
+  ncontr_env [fsfun env with v |-> e] rs.
+Proof. Admitted.
+
+End ContradictTh.
+
+Arguments FVCntr : simpl never.
 
 Lemma dev_contr_CTRUE e2 {e1 : Env}
   {rs : seq Restr} {e : Cenv} {c : Cntr}:
-  (closed_sub e2) -> 
-  (closed_sub (comp e1 e2)) ->
   cntr c (comp e1 e2) <> ERR ->
   dev_cntr c (e1, rs) = CTRUE e ->
   ((cntr c (comp e1 e2) = TRUE (comp e.1 e2)) *
-  (e.2 = rs))%type.
+  (e.2 = rs) *
+  (whole e `<=` (aux e1 (FVCntr c)) `|` whole (e1, rs)))%type.
 Proof.
-move=> CL F.
-case: c => /= [[[]|????]|]//=.
-  rewrite ?fsfun_withE; case: ifP=> [/eqP->|].
-  - rewrite ?comp_var ?fsfun_with //=.
-  case: ifP=> [/eqP-> UV1|]; first rewrite comp_var fsfun_withE UV1 fsfun_with //.
-  move=> VU VV1; rewrite ?comp_var /= fsfun_withE VV1 fsfun_withE VU.
-- case E: (e1 _)=> //= [a|].
-  - case: a E=> [[]|?]//; rewrite /= ?fsfun_withE ?emsubv; case: ifP=> //; case: ifP=> //.
-    move=> ??? + /NCTRUEboth//.
-  - move=> ? [<-] /=; split=> //; apply/congr1.
-  - apply/substE=> ?; rewrite ?comp_env /= ?fsfun_withE.
-    case: ifP=> [/eqP<-|]. rewrite ?fsfun_with. admit.
-    (*rewrite -[(_ /s/ e2) /s/ _]subst_with // -subst_with //.*)
-  (*rewrite ?fsfun_withE emsubv=> ->; case: ifP=> //.*)
-  (*rewrite -[(_ /s/ e2) /s/ _]subst_with // -subst_with //.*)
-  admit.
+case: c => /= ??. rewrite ?comp_env.
+- case E: (_ /s/ e1)=> //= [a|].
+  - case: a E=> // ??; by case: ifP.
+  - move=> [<-] /=; split=> //.
+  by rewrite fsubsetUr.
 rewrite ?comp_env.
 case E: (_ /s/ e1)=> [[[]/=|]|]; rewrite ?comp_env //.
 case E': (_ /s/ e1)=> // [[[]|]]/=.
-- by case: ifP=> //= ?? [<-].
-- by move=> + /NCTRUEboth.
+- by case: ifP=> //= ?? [<-] /=; rewrite fsubsetUr.
+- by case: ifP.
 case E': (_ /s/ e1)=> [[|]|] //.
-- by move=> +/NCTRUEboth.
-- case: ifP=> [/eqP-> + [<-]|? + /NCTRUEboth]//.
-case E1: (_ /s/ _)=> [[][]|]; by rewrite ?eq_refl.
-Admitted.
-
-Lemma memdel r v rs: 
-  r \in delete_restr v rs -> r \in rs.
-Proof. by rewrite /delete_restr mem_filter=> /andP[]. Qed.
+- by case: ifP.
+- case: ifP=> [/eqP-> + [<-]|?]//; last by case: ifP.
+case E1: (_ /s/ _)=> [[][]|]; by rewrite ?eq_refl /= fsubsetUr.
+Qed.
 
 Lemma dev_contr_CFALSE e2 {e1 : Env}
   {rs : seq Restr} {e : Cenv} {c : Cntr}:
   cntr c (comp e1 e2) <> ERR ->
-  ~~ contradict (rsubst rs e2) ->
+  ncontr_env e2 rs ->
   dev_cntr c (e1, rs) = CFALSE e ->
   ((cntr c (comp e1 e2) = FALSE (comp e.1 e2)) *
-  ~~ contradict (rsubst e.2 e2))%type.
+  ncontr_env e2 e.2 *
+  (whole e `<=` (aux e1 (FVCntr c)) `|` whole (e1, rs)))%type.
 Proof.
-case: c=> /= [??? ++ C|?? + C].
-- case E: (_ /s/ e1)=> [[[]|v]|]//; rewrite ?comp_env E /=.
-  - by move=> ? + [<-].
-  move=> ?.
-  rewrite /both; case: ifP=> //= /contradict_rsubstP[r1[r2[]]].
-  move/memdel/memdel=> /[dup] I.
-  move/Ncontradict_rsubstP: (C) => /[apply].
-  move/contradict_rsubst: (C); rewrite /contradict -all_predC=> /allP/(_ _ I).
-  case: ifP=> [?|].
-  case: r1 {I}=> [[[]|]|].
-  - case: r2=> [[[]/= ?? /negbTE->|]|]//.
-    move=> ??; rewrite subst_var; by case: ifP.
-  - case: r2=> [[[]??|v1 v2]|?? v1].
-    - rewrite subst_var; by case: ifP.
-    rewrite ?subst_var; case: ifP; case:ifP=> //.
-    - by move=> /eqP->/eqP->/eqP.
-    by move=> ?? /negbTE->.
-  - rewrite subst_var; case: ifP=> // /eqP->.
-  case S : (e2 v)=> [a|]//=; rewrite ?S //.
-  move=> _ _ ? + [<-]; split=> //=; rewrite ?S.
-  by case: a {S}=> [[]|]/=; rewrite ?S //.
-- case: r2=> [[[]|]|]// ???.
-  rewrite subst_var; case: ifP=> // /eqP->.
-  case S : (e2 v)=> [a|]//=; rewrite ?S //.
-  move=> _ _ ? + [<-]; split=> //=; rewrite S.
-  by case: a {S}=> [[]|]/=.
-- by rewrite emsub_with ?sub_emsub=> ? /negbTE->.
-rewrite ?comp_env; case: (_ /s/ e1)=> //.
-case=> [[]a|]/=.
-- case: (_ /s/ e1)=> [[[]?|]|//] //=.
-  - case: ifP=> // N + [<-]//.
-  move=> ? + /(contradict_ATOM' C) [+ ->]/=.
-  move=> /=; case: (e2 _)=> [[][]|]//=.
-  move=> ? + /negbTE N; by rewrite eq_sym N.
-move=> v; case: (_ /s/ e1)=> //.
-- case=> [[]? H /(contradict_ATOM C)/= [E ->]|?]; last case: ifP=> // ?.
-  - split=> /=; move: E H; case: (e2 _)=> //.
-    - move=> [[]|]// ?; by case: ifP=> // /eqP->/eqP.
-    case=> [][]// ?; rewrite negb_or C andbT=> +?; apply/implyP; rewrite implybNN.
-    by apply/implyP=> /eqP->.
-  move=> + /(contradict_ATOM C)/=[V->]; split=>/=.
-  - move: H; case E: (e2 v)=> // [[[]|]]//=.
-    - case E': (e2 _)=> // [[[]|]]//; case: ifP=> // /eqP A.
-      by rewrite E E' A /= eq_refl in V.
-  - move: H; case E': (e2 _)=> // [[[]|]]//=.
-    case E: (e2 _)=> // [[[]|]]//; case: ifP=> // /eqP N.
-    by rewrite E E' /= N eq_refl in V.
+case: c=> /= [?|??]; rewrite ?comp_env.
+- case E: (_ /s/ e1)=> [[[]|v]|]//=.
+  - by move=> ?? [<-]; split=> //=; rewrite fsubsetUr.
+    case: ifP=> // +++ [<-]/=.
+  case E': (e2 v)=> /=.
+  - rewrite cont_isCONS=> + ? /[dup] nc [?] H.
+    move/H=> {H}H; split=> //. split=> //; apply/ncontr_cons=> //.
+    by rewrite whole_restr fsubUset fsubsetUr aux_CONS E /= fsub1set fsetU11.
+  rewrite cont_isCONS=>  I ? [? /(_ _ I)].
+  by rewrite /ncontr_ncons /= E'.
+rewrite ?comp_env; case E''': (_ /s/ e1)=> // [[[]a|v]].
+- case E'': (_ /s/ e1)=> [[[]?|v]|//] //=.
+  - by case: ifP=> // N + ? [<-]; split=> //=; rewrite fsubsetUr.
+  case: ifP=> // /cont_isEQ[r1 [r2 [I Eq]]] ++[<-]/=.
+  case E': (e2 v)=> // [[[]|]] //; case: ifP=> [/eqP AA ? [/(_ _ _ I)]|].
+  - rewrite -AA in E'.
+    by case: Eq=> [][->->]; rewrite /ncontr_neq /= E' /==>/(_ erefl erefl).
+  move=> /eqP ??; split=> //. rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+  by rewrite E'=> [[/esym]].
+  by rewrite whole_restr fsubUset fsubsetUr aux_EQA E''' E'' /= fsetU0 fset0U fsub1set fsetU11.
+move=> /=; case E: (e2 v)=> // [[[]|]]//.
+case E'''': (_ /s/ e1)=> // [[[]|u]] //.
+- case: ifP=> // +++ [<-]/=.
+  case: ifP=> // [/eqP<-|/eqP AA].
+  - move=> /cont_isEQ[r1 [r2 [I Eq]]] ? [/(_ _ _ I)].
+    by case: Eq=> [][->->]; rewrite /ncontr_neq /= E /==>/(_ erefl erefl).
+  move=> *; split=> //. rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+  by rewrite E=> [[]].
+  by rewrite whole_restr fsubUset fsubsetUr aux_EQA E''' /= E'''' /= fsetU0 fsub1set fsetU11.
+move=> /=; case E': (e2 _)=> // [[[]|]] // ?.
+case: ifP=> //; case: ifP=> //; case: ifP=> [/eqP AA|].
+- rewrite AA in E.
+  move=> /cont_isEQ[r1 [r2 [I Eq]]] ? [/(_ _ _ I)].
+  by case: Eq=> [][->->]; rewrite /ncontr_neq /= E' E /==>/(_ erefl erefl).
+move=> /eqP ???? []<-; split=> //=.
+rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+by rewrite E E'=> [[]].
+by rewrite whole_restr fsubUset fsubsetUr aux_EQA /= E''' E'''' /= fsubsetUl.
 Qed.
-
-Definition good (e : Env) := 
-  forall v u : Var, v \in finsupp e -> e v = u -> u \notin finsupp e.
-
 
 Lemma dev_contr_CBOTH1 {e2 e1 : Env}
   {rs rs1 : seq Restr} {ce1 : Env} {ce2 : Cenv}
   (c c1: Cntr) (e : Env): 
-  (closed_sub e2) ->
-  (good e1) ->
-  ~~ contradict (rsubst rs e2) ->
+  ncontr_env e2 rs ->
   (cntr c (comp e1 e2)) <> ERR ->
   dev_cntr c (e1, rs) = CBOTH c1 (ce1, rs1) ce2 ->
   cntr c1 e2 = TRUE e ->
   (
     (cntr c (comp e1 e2) = TRUE (comp ce1 e)) *
-    (~~ contradict (rsubst rs1 e))
+    (ncontr_env e rs1) *
+    (whole (ce1, rs1) `<=` (aux e1 (FVCntr c)) `|` whole (e1, rs))
   )%type.
 Proof.
-move=> CL C G; case: c=> /= [? v v1|??]; rewrite ?comp_env.
-- case E: (_ /s/ e1)=> // [[[]|]v2] // ; rewrite /both.
-  move=> /[dup] /negbTE; rewrite {1}eq_sym=> NV ?.
-  case: ifP=> //= ? + [<-<-<-] /=. case E' : (e2 _)=> //=[?].
-  move=> _ ? [<-]; split.
-  - apply/congr1/substE=> u; rewrite ?comp_env.
-    case: (boolP (u == v2))=> [/eqP->|/negbTE NE].
-    - case: ifP=> [/andP[/negbTE V2V /negbTE V2V1]|NE].
-      - rewrite /= fsfun_with /= fsfun_with /= fsfun_with.
-        rewrite ?fsfun_withE NV eq_refl /= ?fsfun_withE NV eq_refl ?emsubv.
-        rewrite V2V V2V1. admit. (* goodness *)
-      - rewrite /= fsfun_with /= ?fsfun_withE emsubv; case: ifP.
-        - rewrite /= fsfun_with. admit. (* e2 closed *)
-        move=> V2V; rewrite V2V /= in NE; move/negbT: NE; case: ifP=> //.
-        move/eqP<-; rewrite /= fsfun_withE V2V fsfun_with. admit. (* e2 closed *)
-      rewrite /= ?fsfun_withE NE emsubv /= ?fsfun_withE; move: (NV). 
-      case: ifP.
-      - rewrite /= fsfun_with. admit. (* closed e2 *)
-      case: ifP=> /=.
-      - rewrite fsfun_withE NV fsfun_with. (* closed e2 *) admit.
-      admit.
-      admit.
-case E: (_ /s/ e1)=> [[[]|]|]//=. 
-- case E': (_ /s/ e1)=> [[[]|]|] //; first by case: ifP.
-  - rewrite/both; case: ifP=> //= ? + [<-<-<-?/=].
-    case E1: (e2 _)=> //[[[]|]]//; case: ifP=> // ? + [<-]; split.
-    apply/congr1.
-    apply/substE=> ?; rewrite ?comp_env /= fsfun_withE emsubv; case: ifP=> //=.
-    move/eqP=>->. (* goodnes e1 *) admit. 
-    admit.
-- case E': (_ /s/ e1)=> /= [[[]|]|]//=.
-  - rewrite /both; case: ifP=> //= ? + [<-<-<-/= ?].
-    case E1: (e2 _)=> // [[[]|]]//; case: ifP=> //.
-    move/eqP=> A ? [<-]; split.
-    - apply/congr1/substE=> ?; rewrite ?comp_env /= fsfun_withE emsubv.
-      case: ifP=> /= [/eqP->|] //. (* goodnes e1 *) admit.
-    admit.
-  - case: ifP=> // + ?; rewrite /both; case: ifP=> // ? + [<-<-<-]/=.
-    case E1: (e2 _)=> /= [[[]|]|] //.
-    - case E2: (e2 _)=> // [[[]|]]//; case: ifP=> //.
-      move=> ??? [<-]. split.
-      - apply/congr1/substE=> ?; rewrite ?comp_env /= fsfun_withE emsubv.
-        case: ifP=> /= [/eqP->|] //. (* goodeness e1 *) admit.
-      admit.
-    case E2: (e2 _)=> // [[[]|]]//; case: ifP=> //.
-Admitted.
+case: c=> /= [a|??]; rewrite ?comp_env.
+- case: (a /s/ e1)=> // [[[]|]] // ?; case: ifP=> // ? /=.
+  case E: (e2 _).
+  - move=> ?? [<-<-<-]/=; by rewrite E.
+  move=> ?? [<-<-<-]/=; rewrite E compe0 => ? []<-; split=> //.
+  by rewrite fsubsetUr.
+case R: (_ /s/ e1)=> // [[[]|v]]//=.
+case E: (_ /s/ e1)=> [[[]|v]|] //= C; first by case: ifP.
+- case E': (e2 _)=> // [[[]a1|]] // ?; case: ifP=> // C' [<-<-<-?]/=.
+  rewrite E'; case: ifP=> // /eqP/[dup] ? -> [<-]; split; first split.
+  - apply/congr1/substE=> ?; rewrite ?comp_env.
+    suff {1}->: e2 = comp [fsfun emsub with v |-> Exp_Arg 'a1] e2.
+    - by rewrite comp_env.
+    apply/substE=> u; rewrite comp_env /= fsfun_withE emsubv; case: ifP=> //.
+    by move/eqP->.
+  - split=> // [??|?] /mapP[][]//=.
+    - move=> ??; case: ifP=> [/eqP A1V I|].
+      - case: ifP=> // [/eqP A2V[->->]| ].
+        - by case: C=> /(_ _ _ I); rewrite A1V A2V /ncontr_neq /= E' /=.
+        move=> ? [->-> ? H].
+        by case: C=> /(_ _ _ I); rewrite /ncontr_neq A1V /= E' /==> /(_ erefl H).
+      case: ifP=> [/eqP-> ? I [->-> H ?]|]/=.
+      - by case: C=> /(_ _ _ I); rewrite /ncontr_neq /= E' => /(_ H erefl).
+      move=> ?? I [->->] H1 H2.
+      by case: C=> /(_ _ _ I H1 H2).
+    by move=> ? I [->]; case: C=> ? /(_ _ I).
+    apply/(fsubset_trans whole_comp).
+    rewrite aux_EQA E /= fsetU0 fsubUset [_ `|` [fset v]]fsetUC fsub1set -fsetUA fsetU11 /=.
+    by apply/(fsubset_trans whole_cas)=> /=; rewrite fset0U fsetUA fsubsetUr.
+case E: (e2 _)=> // [[[]|]] //.
+case G: (_ /s/ e1)=> // [[[]a1|u]] //=.
+- move=> + a; case: ifP=> // C C' [<-<-<-?]/=.
+  rewrite E; case: ifP=> // /eqP A [<-]; split; first split.
+  - apply/congr1/substE=> ?; rewrite ?comp_env.
+    suff {1}->: e2 = comp [fsfun emsub with v |-> Exp_Arg 'a1] e2.
+    - by rewrite comp_env.
+    apply/substE=> u; rewrite comp_env /= fsfun_withE emsubv; case: ifP=> //.
+    by move/eqP->; rewrite -A.
+    split=> // [??|?] /mapP[][]//=.
+  - move=> ??; case: ifP=> [/eqP A1V I|].
+    - case: ifP=> // [/eqP A2V[->->]| ].
+      - by case: C'=> /(_ _ _ I); rewrite A1V A2V /ncontr_neq /= E A /=.
+      move=> ? [->-> ? H].
+      by case: C'=> /(_ _ _ I); rewrite /ncontr_neq A1V /= E A /==> /(_ erefl H).
+    case: ifP=> [/eqP-> ? I [->-> H ?]|]/=.
+    - by case: C'=> /(_ _ _ I); rewrite /ncontr_neq /= E A => /(_ H erefl).
+    move=> ?? I [->->] H1 H2.
+    by case: C'=> /(_ _ _ I H1 H2).
+  by move=> ? I [->]; case: C'=> ? /(_ _ I).
+  apply/(fsubset_trans whole_comp).
+  rewrite aux_EQA G /= fsetU0 R /= fsubUset fsetU0 fsub1set fsetU11 /=.
+  by apply/(fsubset_trans whole_cas)=> /=; rewrite fset0U fsubsetUr.
+case E': (e2 u)=> // [[[]|]] // +?; case: ifP=> //; case: ifP=> //.
+move=> C ? C' [<-<-<-?]/=.
+rewrite E E'; case: ifP=> // /eqP A [<-]; split; first split.
+- apply/congr1/substE=> ?; rewrite ?comp_env.
+ suff {1}->: e2 = comp [fsfun emsub with v |-> Exp_Arg u] e2.
+  - by rewrite comp_env.
+  apply/substE=> ?; rewrite comp_env /= fsfun_withE emsubv; case: ifP=> //.
+  by move/eqP->; rewrite /= E E' A.
+  split=> // [??|?] /mapP[][]//=.
+- move=> ??; case: ifP=> [/eqP A1V I|].
+  - case: ifP=> // [/eqP A2V[->->]| ].
+    - by case: C'=> /(_ _ _ I); rewrite A1V A2V /ncontr_neq /= E A -E' /=.
+    move=> ? [->-> ? H].
+    by case: C'=> /(_ _ _ I); rewrite /ncontr_neq A1V /= E A E' /==> /(_ erefl H).
+  case: ifP=> [/eqP-> ? I [->-> H ?]|]/=.
+  - by case: C'=> /(_ _ _ I); rewrite /ncontr_neq /= E A E' => /(_ H erefl).
+  move=> ?? I [->->] H1 H2.
+  by case: C'=> /(_ _ _ I H1 H2).
+by move=> ? I [->]; case: C'=> ? /(_ _ I).
+apply/(fsubset_trans whole_comp)=> /=.
+rewrite aux_EQA R G /= fsubUset fsubsetUl /=.
+by apply/(fsubset_trans whole_cas)=> /=; rewrite [[fset v; u]]fsetUC -fsetUA fsetUS // fsubsetUr.
+Qed.
 
 Lemma dev_contr_CBOTH2 {e2 e1 : Env}
   {rs rs1 : seq Restr} {ce1 : Env} {ce2 : Cenv}
   {c c1: Cntr} {e : Env}: 
-  ~~ contradict (rsubst rs e2) ->
+  ncontr_env e2 rs ->
   (cntr c (comp e1 e2)) <> ERR ->
   dev_cntr c (e1, rs) = CBOTH c1 ce2 (ce1, rs1) ->
   cntr c1 e2 = FALSE e ->
   (
     (cntr c (comp e1 e2) = FALSE (comp ce1 e)) *
-    (~~ contradict (rsubst rs1 e2))
+    (ncontr_env e2 rs1) *
+    (whole (ce1, rs1) `<=` (aux e1 (FVCntr c)) `|` whole (e1, rs))
   )%type.
 Proof.
-move=> C; case: c=> /= [???|??]; rewrite ?comp_env.
+move=> C; case: c=> /= [?|??]; rewrite ?comp_env.
 case E: (_ /s/ e1)=> [[[]|]|]//=.
 move=> ?. 
-- rewrite/both; case: ifP=> //= ? + [<-?<-<-]/=.
-  case: (e2 _)=> // [[[]??[<-]|??[<-]]]//.
-  case: ifP=> //=.
-- case: (_ /s/ e1)=> [[[]|]|]//=.
-  case: (_ /s/ e1)=> [[[]|]|]//= ??; first by case:ifP.
-  rewrite /both; case: ifP=> //= ? + [<-?<-<-]/=.
-  case: (e2 _)=> // [[]] // [] ?; case: ifP=> [/eqP-> ?|] //.
-  move=> N ? [<-]; by rewrite eq_sym N.
-- case: (_ /s/ e1)=> [[[]|]|???+[<-?<-<-]]/=.
-  - move=> ??; rewrite /both /=; case: ifP=> //= ? + [<-?<-<-/=].
-    case: (e2 _)=> // [[]] // [] ?; by case: ifP=> // ? + [<-].
-  move=> ??; case: ifP => // ? +; rewrite/both; case: ifP=> //.
-  move=> N + [<-?<-<-]/=; case: (e2 _)=> [[]// []|??] //.
-  by case: (e2 _)=> // [[]] // [] ??; case: ifP=> // ?? [<-].
-by case: (e2 _)=> [] // [] // [] /=.
+- case: ifP=> //= + [<-?<-<-]/=.
+  case E': (e2 _)=> // ? [<-]; split=> //. rewrite ?fsubsetUr //; split=> //.
+  apply/ncontr_cons.
+  split=> //; by rewrite /ncontr_ncons /= E'.
+  by rewrite whole_restr /= aux_CONS E /=.
+- case E'': (_ /s/ e1)=> [[[]|v]|]//=.
+  case E': (_ /s/ e1)=> [[[]|]|]//= ?; first by case:ifP.
+  rewrite /both; case: ifP=> //=  + [<-?<-<-]/=.
+  case E: (e2 _)=> // [[[]|]] //; case: ifP=> [/eqP-> ?|] //.
+  move=> /eqP N ? [<-]; split=> //. rewrite (ncontr_eq, fsubsetUr) //.
+  split=> //; split=> // ?? /=; by rewrite E=> /esym [].
+  by rewrite whole_restr /= aux_EQA E' /= fsetU0 -fsetUA fsubsetUr.
+case E: (e2 _)=> // [[[]|]] //.
+case E': (_ /s/ e1)=> // [[[]|]] //=.
+- move=> ?; case: ifP=> // ? [<-?<-<-]/=; rewrite E; case: ifP=> /eqP AA // [<-].
+  split=> //. rewrite (ncontr_eq, fsubsetUr) //; split=> //.
+  by split=> // ?? /=; rewrite E=> [[]].
+  by rewrite whole_restr /= aux_EQA E'' /= fsetU0 [_ |` FVExp _]fsetUC -fsetUA fsubsetUr.
+move=> /=; case E''': (e2 _)=> // [[[]|]] // ?; case: ifP=> //; case: ifP=> //.
+move=> ?? [<-?<-<-] /=; rewrite E''' E; case: ifP=> // /eqP ? [<-].
+split=> //. rewrite (ncontr_eq, fsubsetUr) //; split=> //; split=> // ??.
+by rewrite /= E E'''=> [[]].
+by rewrite whole_restr /= aux_EQA E'' E' /=.
 Qed.
 
 Lemma dev_contr_CBOTH3 {e2 e1 : Env}
@@ -516,9 +582,9 @@ Lemma dev_contr_CBOTH3 {e2 e1 : Env}
   dev_cntr c (e1, rs) = CBOTH c1 ce2 (ce1, rs1) ->
   cntr c1 e2 = ERR -> False.
 Proof.
-case: c=> [a??|??]/=; rewrite ?comp_env.
-- case: (_ /s/ e1)=> // [[]] // ???; rewrite /both.
-  by case: ifP=> // ? [<-?] /=; case: (e2 _).
+case: c=> [a|??]/=; rewrite ?comp_env.
+- case: (_ /s/ e1)=> // [[]] // ?; rewrite /both.
+  by case: ifP=> // ?? [<-?] /=; case: (e2 _).
 case: (_ /s/ e1)=> // [[[]|]]/=.
 - case: (_ /s/ e1)=> []// [[]|]/= ??; first by case: ifP.
 - rewrite /both; case: ifP => // ? + [<-?] /=.
@@ -532,39 +598,109 @@ case: (_ /s/ e1)=> [[[]|]|???+[<-]] /=.
 by case: (e2 _).
 Qed.
 
+Fixpoint well_typed (t : Tree) (e : {fset Var}) : bool := 
+  match t with 
+  | RET _ => true
+  | LET v x t => well_typed t (v |` FVExp x `|` e)
+  | COND c t1 t2 => 
+     well_typed t1 (FVCntr c `|` e) &&
+     well_typed t2 (FVCntr c `|` e)
+  | HT v u _ x t => 
+    [&& x != v, x != u,
+        v \notin e, u \notin e &
+        well_typed t (v |` (u |` (x |` e)))]
+  end.
+
+Lemma well_typed_subset e2 {e1 : {fset Var}} {t}:
+  e1 `<=` e2 ->
+  well_typed t e2 -> well_typed t e1.
+Proof.
+elim: t e1 e2=> //= [??? IH ??? /IH|c? IHt1 ? IHt2 ? e2 ? /andP[/IHt1 H1 /IHt2 H2]|].
+- by apply; rewrite fsetUS.
+- by rewrite (IHt1 _ (FVCntr c `|` e2)) 1?(IHt2 _ (FVCntr c `|` e2)) ?fsetUS ?(H1, H2).
+move=> ????? IH ?? /[dup]/fsubsetP S? /and5P[->->] /negP H1 /negP H2 /IH H /=.
+by rewrite H ?fsetUA ?fsetUS // andbT; apply/andP; split; apply/negP=> /S.
+Qed.
+
+Arguments whole : simpl never.
+
+
 Lemma int_dev (t : Tree) (e1 e2 : Env) (rs : seq Restr): 
-  (closed_sub e2) ->
+  well_typed t (whole (e1, rs)) ->
   int t (comp e1 e2) <> '0 ->
-  ~~ contradict (rsubst rs e2) ->
+  ncontr_env e2 rs ->
   int t (comp e1 e2) = int (dev t (e1, rs)) e2.
 Proof.
-elim: t e1 e2 rs=> //= [*|t e ?|c t1 IHt1 t2 IHt2 e1 e2 ? CL C CR].
-- by rewrite comp_env.
-- move => IHt /= e1 e2 ?? NE ?.
-  have H: [fsfun comp e1 e2 with t |-> e /s/ ([fsfun comp e1 e2 with t |-> Exp_Arg '0])] =
-  comp [fsfun e1 with t |-> e /s/ ([fsfun e1 with t |-> Exp_Arg '0])] e2.
-  - apply/substE=> u; rewrite comp_env /=.
-    rewrite ?fsfun_withE; case: ifP=> [?|?].
-    - suff ->: [fsfun comp e1 e2 with t |-> Exp_Arg ' (0)] =
-            comp [fsfun e1 with t |-> Exp_Arg ' (0)] e2.
-      - by rewrite comp_env.
-    apply/substE=> u'; rewrite comp_env /= ?fsfun_withE; case: ifP=> //.
-    - by rewrite -[comp e1 e2 u']/(u' /s/ (comp e1 e2)) comp_env.
-    by rewrite -[comp e1 e2 u]/(u /s/ (comp e1 e2)) comp_env.
-  by rewrite -IHt // -H.
+elim: t e1 e2 rs => // [*|/= v e t IHt e1 e2 rs wf||].
+- by rewrite /= comp_env.
+- have <-: comp [fsfun e1 with v |-> e /s/ e1] e2 =
+        [fsfun comp e1 e2 with v |-> e /s/ (comp e1 e2)].
+  - apply/substE=> u; rewrite comp_env /= ?fsfun_withE.
+    by case: ifP; rewrite -?[comp e1 e2 u]/(u /s/ (comp e1 e2)) comp_env.
+  move=> *; rewrite -IHt //.
+  apply/(well_typed_subset _ _ wf)/(fsubset_trans whole_with).
+  by rewrite -?fsetUA fsetUS // fsubUset ?fsubsetUr whole_subst.
+move=> c t1 IHt1 t2 IHt2 e1 e2 rs /= /andP[] wf1 wf2 C.
 have NE : (cntr c (comp e1 e2) <> ERR) by move: C; case: (cntr _).
-case E : (dev_cntr _ _)=> [[]|[]|?[]??[]]/=.
-- move/(dev_contr_CTRUE CL NE): E C=>/=[->->] ?.
-  by rewrite -IHt1.
-- move/(dev_contr_CFALSE e2 NE CR): E C=>/= [-> ?] ?.
-  by rewrite -IHt2.
+case E : (dev_cntr _ _)=> [[]|[]|?[]??[]]/= N.
+- move/(dev_contr_CTRUE _ NE): E C=>/=[[->-> s]] ?.
+  rewrite -IHt1 //. apply/(well_typed_subset _ s).
+  apply/(well_typed_subset _ _ wf1).
+  by rewrite fsubUset auxE fsubsetUr.
+- move/(dev_contr_CFALSE NE N): E C=>/= [[-> ? s]] ?.
+  rewrite -IHt2 //. apply/(well_typed_subset _ s).
+  apply/(well_typed_subset _ _ wf2).
+  by rewrite fsubUset auxE fsubsetUr.
 case E': (cntr _ e2).
-- move: E' C=> /[dup] /(dev_contr_CBOTH1 _ CL CR NE E)[->].
-  move=> ? /cntr_env_TRUE/(_ CL)[] *; by rewrite -IHt1.
-- move: E' C=> /[dup] /(dev_contr_CBOTH2 CR NE E)[->].
-  move=> ? /cntr_env_FALSE /eqP -> ?; by rewrite -IHt2.
-by move/(dev_contr_CBOTH3 NE E): E'.
-Admitted.
+  - move: E' C=> /[dup] /(dev_contr_CBOTH1 _ N NE E)[[->]] ? s /cntr_env_TRUE Eq ?.
+    rewrite -IHt1 //. apply/(well_typed_subset _ s).
+    apply/(well_typed_subset _ _ wf1).
+  by rewrite fsubUset auxE fsubsetUr.
+  - move: E' C=> /[dup] /(dev_contr_CBOTH2 N NE E) [[->]] ? s /cntr_env_FALSE Eq ?.
+    rewrite -IHt2  // ?Eq //. apply/(well_typed_subset _ s).
+    apply/(well_typed_subset _ _ wf2).
+    by rewrite fsubUset auxE fsubsetUr.
+  by move/(dev_contr_CBOTH3 NE E): E'.
+move=> v u /[dup] /negbTE nvu ? e t IHt e1 e2 rs /=.
+move=> /and5P[/negbTE yv /negbTE yu ve1 une1 s].
+rewrite -[comp e1 e2 e]/(e /s/ (comp e1 e2)) comp_env /=.
+case E': (e1 e)=> /= [[[]|y]|e3 e4] //=.
+  - case E: (e2 y)=> // [e3 e4].
+    have->: [fsfun comp e1 e2 with v |-> e3, u |-> e4] =
+        (comp [fsfun e1 with e |-> CONS v u, v |-> Exp_Arg v, u |-> Exp_Arg u]
+              [fsfun e2 with v |-> e3, u |-> e4]).
+    - apply/substE=> v0; rewrite comp_env /= ?fsfun_withE; case: ifP.
+      - by move/eqP->; rewrite eq_sym yv /= fsfun_with.
+      case: ifP=> [/eqP-> UV|].
+      - by rewrite [u == e]eq_sym yu /= fsfun_withE UV fsfun_with.
+      case: ifP=> [/eqP->|vy vu vv] /=.
+      - rewrite fsfun_with fsfun_withE [u == v]eq_sym nvu fsfun_with.
+        by rewrite -[comp e1 e2 e]/(e /s/ (comp e1 e2)) comp_env /= E' /= E.
+      by rewrite ?(memNwhole rs) // -[comp e1 e2 v0]/(v0 /s/ (comp e1 e2)) comp_env.
+    move=> ??; rewrite -IHt=> //.
+    apply/(well_typed_subset _ _ s)/(fsubset_trans whole_with)=> /=.
+    rewrite fsubUset [e |` _]fsetUC -?fsetUA ?fsetUS //= ?fsub1set ?fsetU11 //.
+    apply/(fsubset_trans whole_with)=> /=.
+    rewrite fsubUset fsubUset fsub1set fsetU11 /= fsetUA [[fset v; u]]fsetUC fsetUA.
+    apply/(fsubset_trans whole_with)=> /=.
+    by rewrite fsetSU ?fsub1set // fsubUset -fsetUA fsubsetUl.
+    by apply/(ncontr_whole e1)=> //; apply/(ncontr_whole e1).
+have->: [fsfun comp e1 e2 with v |-> e3 /s/ e2, u |-> e4 /s/ e2] =
+        comp [fsfun e1 with v |-> e3, u |-> e4] e2.
+apply/substE=> ?; rewrite /= ?fsfun_withE; case: ifP=> [/eqP->|].
+- by rewrite comp_var fsfun_with.
+case: ifP=> [/eqP-> UV|VU VV];
+by rewrite ?comp_var ?fsfun_withE ?eq_refl ?UV ?VV ?VU.
+move=> ??. rewrite -IHt=> //.
+case/(whole_cons rs): E'=> H1 H2.
+apply/(well_typed_subset _ _ s).
+apply/(fsubset_trans whole_with). 
+rewrite -fsetUA fsetUS // fsubUset; apply/andP; split.
+- by apply/(fsubset_trans H1); rewrite fsetUA fsubsetUr.
+apply/(fsubset_trans whole_with).
+rewrite -fsetUA fsetUS // fsubUset fsubsetUr andbT; apply/(fsubset_trans H2).
+by rewrite fsubsetUr.
+Qed.
 
 Lemma foldr_monoid {T : Type} {f : T -> T -> T} {n s1 s2}: 
   associative f ->
@@ -592,12 +728,16 @@ Qed.
 Theorem int_dev_Prog (p : Prog) (e1 e2 : seq Exp):
   let: DEFINE n vs t := p in
   (size e1 + size e2)%N = size vs ->
-  (forall x, x \in e2 -> closed x) ->
+  (forall x, x \in e1 -> closed x) ->
+  well_typed t fset0 ->
   int_Prog p (e1 ++ e2) <> '0 ->
   int_Prog p (e1 ++ e2) = int_Prog (dev_Prog p e1) e2.
 Proof. 
-case: p=> /= _ ??? H ?.
-by rewrite -int_dev // -?fmap_cat // => ? /codomf_fmap_of/H.
+case: p=> /= _ l ?? H ??; rewrite -int_dev // -?fmap_cat //.
+have/eqP-> //: whole (fmap_of l e1, [::]) == fset0.
+rewrite /whole /= fsetU_eq0 -?fsubset0.
+apply/andP; split; apply/fsubsetP=> x /imfset2P[? //] /codomf_fmap_of/H /eqP->.
+by case.
 Qed.
 
 
