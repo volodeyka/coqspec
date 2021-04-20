@@ -8,22 +8,11 @@ Unset Printing Implicit Defensive.
 Open Scope fmap_scope.
 Open Scope fset_scope.
 Definition Atom  := nat.
-Definition Name  := nat.
+Definition Var  := nat.
 Definition FName := nat.
 
 Inductive Val := ATOM of Atom.
 Notation "''' e" := (ATOM e) (at level 0).
-
-Inductive Var := VAR of Name.
-
-Definition eq_var  :=
-  fun '(VAR x) '(VAR y) => x == y.
-
-Lemma eqvarP : Equality.axiom eq_var.
-Proof. by case=> ?[?/=]; apply/(iffP eqP)=> [|[]]->. Qed.
-
-Canonical var_eqMixin := EqMixin eqvarP.
-Canonical var_eqType := Eval hnf in EqType Var var_eqMixin.
 
 Definition val_indDef := [indDef for Val_rect].
 Canonical val_indType := IndType Val val_indDef.
@@ -32,14 +21,6 @@ Definition val_eqMixin := [derive eqMixin for Val].
 Canonical val_eqType := EqType Val val_eqMixin.
 Definition val_choiceMixin := [derive choiceMixin for Val].
 Canonical val_choiceType := Eval hnf in ChoiceType Val val_choiceMixin.
-
-Definition of_Var : Var -> nat := fun '(VAR x) => x.
-
-Lemma of_VarK : cancel of_Var VAR.
-Proof. by case. Qed.
-
-Definition var_choiceMixin := CanChoiceMixin of_VarK.
-Canonical var_choiceType := Eval hnf in ChoiceType Var var_choiceMixin.
 
 Inductive Arg := 
   | Arg_Val of Val
@@ -53,13 +34,13 @@ Canonical arg_indType := IndType Arg arg_indDef.
 Definition eq_arg a b := 
   match a, b with
   | Arg_Val 'a, Arg_Val 'b => a == b
-  | Arg_Var (VAR x), Arg_Var (VAR y) => x == y
+  | Arg_Var x, Arg_Var y => x == y
   | _, _ => false
   end.
 
 Lemma eqargP : Equality.axiom eq_arg.
 Proof. 
-  by case=> [][]?[][]?/=; try (by constructor); apply/(iffP eqP)=> [|[]]->. 
+by case=> [[]?[[]|]|?[]]?/=; try (by constructor); apply/(iffP eqP)=> [|[]]->. 
 Qed.
 
 Canonical arg_eqMixin := EqMixin eqargP.
@@ -106,10 +87,13 @@ Inductive Tree :=
   | RET  of Exp
   | LET  of Var  & Exp  & Tree
   | COND of Cntr & Tree & Tree
-  | HT   : forall (u v : Var), (u != v) -> Var -> Tree -> Tree.
+  | HT   of Var & Var & Var & Tree
+  | CALL of FName & seq Var.
 Coercion RET : Exp >-> Tree.
 
 Inductive Prog := DEFINE of FName & seq Var & Tree.
+
+Definition Programm := seq Prog.
 
 Definition Env := {fsfun Var -> Exp for id}.
 
@@ -157,25 +141,45 @@ Definition cntr (c : Cntr) (e : Env) : Branch :=
     else FALSE e
   end.
 
-Fixpoint int (t : Tree) (e : Env) : Exp := 
-  match t with
-  | RET x         => subst x e
-  | LET v x t     => 
-    int t  [fsfun e with v |-> x /s/ e]
-  | COND c t' t'' => 
-    match cntr c e with
-    | TRUE e'   => int t'  e'
-    | FALSE e'' => int t'' e''
-    | ERR       => '0
-    end
-  | HT v u pf x t => 
-    if x /s/ e is CONS a b then 
-      int t [fsfun e with v |-> a, u |-> b]
-    else '0
+Fixpoint get_func (f : FName) (p : Programm) : (Tree * seq Var)%type := 
+  match p with 
+  | [::]                  => (RET '0, [::])
+  | (DEFINE g xs t) :: ps => 
+    if f == g then (t, xs)
+    else get_func f ps
   end.
 
 Definition fmap_of (ks : seq Var) (vs : seq Exp) : Env :=
   foldr comp emsub (map (fun '(a, b)=> [fsfun emsub with a |-> b]) (zip ks vs)).
+
+Definition State := (Tree * Env)%type.
+
+Fixpoint int (t : Tree) (e : Env) (p : Programm) : State := 
+  match t with
+  | RET x         => (RET (subst x e), emsub)
+  | LET v x t     => 
+    int t  [fsfun e with v |-> x /s/ e] p
+  | COND c t' t'' => 
+    match cntr c e with
+    | TRUE e'   => int t'  e'  p
+    | FALSE e'' => int t'' e'' p
+    | ERR       => (RET '0, emsub)
+    end
+  | HT v u x t => 
+    if x /s/ e is CONS a b then 
+      int t [fsfun e with v |-> a, u |-> b] p
+    else (RET '0, emsub)
+  | CALL f args => 
+    let: (t, xs) := (get_func f p) in
+      (t, fmap_of xs (map e args))
+  end.
+
+Definition int_to_step (s1 s2 : State) (p : Programm) := 
+  let: (t, e) := s1 in
+  int t e p = s2.
+
+Inductive int_to := .
+
 
 Definition int_Prog (f : Prog) (e : seq Exp) := 
   let: DEFINE _ vs t := f in
@@ -224,7 +228,7 @@ Fixpoint FVTree (t : Tree) : {fset Var} :=
   | RET e        => FVExp e
   | LET v x t    => (FVExp x `|` FVTree t) `\ v
   | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
-  | HT v u pf x t     => (FVExp x `|` FVTree t) `\ v `\ u
+  | HT v u x t     => (FVExp x `|` FVTree t) `\ v `\ u
   end.
 
 Definition closed_sub (e : Env) := 

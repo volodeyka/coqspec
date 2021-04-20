@@ -1,7 +1,98 @@
+From Coq Require Import Lia Relations.
 From mathcomp Require Import ssreflect ssrnat eqtype ssrbool ssrfun seq.
 From mathcomp Require Import finmap choice finfun fintype.
 From deriving Require Import deriving.
 From coqspec Require Import int.
+
+Ltac ssrnatify_rel :=
+ match goal with
+  (* less or equal (also codes for strict comparison in ssrnat) *)
+  | H : is_true (leq _ _) |- _ => move/leP: H => H
+  | H : context [ is_true (leq ?a ?b)] |- _ =>
+     rewrite <- (rwP (@leP a b)) in H
+  | |- is_true (leq _ _) => apply/leP
+  | |- context [ is_true (leq ?a ?b)] => rewrite <- (rwP (@leP a b))
+  (* Boolean equality *)
+  | H : is_true (@eq_op _ _ _) |- _ => move/eqP: H => H
+  | |- is_true (@eq_op _ _ _) => apply/eqP
+  | H : context [ is_true (@eq_op _ _ _)] |- _ =>
+     rewrite <-  (rwP (@eqP _ _ _)) in H
+  | |- context [ is_true (@eq_op _ ?x ?y)] => rewrite <- (rwP (@eqP _ x y))
+  (* Negated boolean equality *)
+  | H : is_true (negb (@eq_op _  _ _)) |- _ => move/eqP: H => H
+  | |- is_true (negb (@eq_op _  _ _)) => apply/eqP
+  | H : context [ is_true (negb (@eq_op _ _ _))] |- _ =>
+     rewrite <-  (rwP (@eqP _ _ _)) in H
+  | |- context [ is_true (negb (@eq_op _ ?x ?y))] =>
+     rewrite <- (rwP (@eqP _ x y))
+  | H : (negb (@eq_op _  _ _)) = true |- _ => move/eqP: H => H
+  | |- (negb (@eq_op _  _ _)) = true => apply/eqP
+  | H : context [ (negb (@eq_op _ _ _)) = true ] |- _ =>
+     rewrite <-  (rwP (@eqP _ _ _)) in H
+  | |- context [ (negb (@eq_op _ ?x ?y)) = true ] =>
+     rewrite <- (rwP (@eqP _ x y))
+
+  | H : (leq _ _) = true |- _ => move/leP: H => H
+  | H : context [ (leq ?a ?b) = true] |- _ =>
+     rewrite <- (rwP (@leP a b)) in H
+  | |- (leq _ _) = true => apply/leP
+  | |- context [(leq ?a ?b) = true] => rewrite <- (rwP (@leP a b))
+  (* Boolean equality *)
+  | H : (@eq_op _ _ _) = true |- _ => move/eqP: H => H
+  | |- (@eq_op _ _ _) = true => apply/eqP
+  | H : context [(@eq_op _ _ _) = true] |- _ =>
+     rewrite <-  (rwP (@eqP _ _ _)) in H
+  | |- context [(@eq_op _ ?x ?y) = true] => rewrite <- (rwP (@eqP _ x y))
+
+  (* Negated lt *)
+  | H : is_true (negb (leq (S _) _)) |- _ => move: H; rewrite -leqNgt=> H
+  | H : context [ is_true (negb (leq (S _) _))] |- _ =>
+     rewrite -leqNgt in H
+  | |- is_true (negb (leq (S _) _)) => rewrite -leqNgt
+  | |- context [ is_true (negb (leq (S _) _))] => rewrite -leqNgt
+
+  (* Negated leq *)
+  | H : is_true (negb (leq _ _)) |- _ => move: H; rewrite -ltnNge=> H
+  | H : context [ is_true (negb (leq _ _))] |- _ =>
+     rewrite -ltnNge in H
+  | |- is_true (negb (leq _ _)) => rewrite -ltnNge
+  | |- context [ is_true (negb (leq _ _))] => rewrite -ltnNge
+
+   (* = flase *)
+  | H : (_ = false) |- _ => move/negbT: H => H
+  | |- (_ = false) => apply/negP
+  | H : context [ (?a = false)] |- _ =>
+     rewrite <-  (rwP (@negP a)) in H
+  | |- context [ ?a = false] =>
+     rewrite <- (rwP (@negP a))
+
+ end.
+
+
+(* Converting ssrnat operation to their std lib analogues *)
+Ltac ssrnatify_op :=
+ match goal with
+  (* subn -> minus *)
+  | H : context [subn _ _] |- _ => rewrite -!minusE in H
+  | |- context [subn _ _] => rewrite -!minusE
+  (* addn -> plus *)
+  | H : context [addn _ _] |- _ => rewrite -!plusE in H
+  | |- context [addn _ _] => rewrite -!plusE
+  (* muln -> mult *)
+  | H : context [muln _ _] |- _ => rewrite -!multE in H
+  | |- context [muln _ _] => rewrite -!multE
+ end.
+
+(* Preparing a goal to be solved by lia by translating every formula *)
+(* in the context or the conclusion which expresses a constraint on *)
+(* some nat into the std lib, Prop, analogues *)
+Ltac ssrnatify :=
+  repeat progress ssrnatify_rel;
+  repeat progress ssrnatify_op.
+
+(* Preprocessing + lia *)
+Ltac slia := try (move=> * //=); do [ ssrnatify; lia | exfalso; ssrnatify; lia].
+
 
 Set Implicit Arguments.
 Unset Printing Implicit Defensive.
@@ -143,40 +234,123 @@ Definition dev_cntr (c : Cntr) (ce : Cenv) : CBranch :=
   end.
 
 
-Fixpoint dev (t : Tree) (e : Cenv) : Tree :=
+Fixpoint dev (k : Var) (t : Tree) (e : Cenv) : Tree :=
   match t with
   | RET x        => x /s/ (e.1)
   | LET v x t    => let (e, rs) := e in
-    dev t ([fsfun e with v |-> x /s/ e], rs)
-  | HT v u pf x t    => let (e, rs) := e in
+    dev k t ([fsfun e with v |-> x /s/ e], rs)
+  | HT v u x t    => let (e, rs) := e in
     match x /s/ e with
     | CONS a b =>
-      dev t ([fsfun e with v |-> a, u |-> b], rs)
+      dev k t ([fsfun e with v |-> a, u |-> b], rs)
     | Arg_Var y => 
-      HT v u pf y (
-        dev t ([fsfun e with x |-> CONS v u, v |-> Exp_Arg v, u |-> Exp_Arg u], rs)
+      HT (k.+1) (k.+2) y (
+        dev k.+3 t 
+          ([fsfun e with 
+            x |-> CONS (k.+1 : Var) (k.+2 : Var),
+            v |-> Exp_Arg (k.+1 : Var),
+            u |-> Exp_Arg (k.+2 : Var)], rs)
       )
     | _ => RET '0
     end
   | COND c t1 t2 => 
     match dev_cntr c e with
-    | CTRUE e       => dev t1 e
-    | CFALSE e      => dev t2 e
-    | CBOTH c e1 e2 => COND c (dev t1 e1) (dev t2 e2)
+    | CTRUE e       => dev k t1 e
+    | CFALSE e      => dev k t2 e
+    | CBOTH c e1 e2 => COND c (dev k t1 e1) (dev k t2 e2)
     end
   end.
+
+Definition max_set (f : seq Var) : Var :=
+  foldr maxn 0 f.
+
+Lemma max_set0 : max_set fset0 = 0.
+Proof. by []. Qed.
+
+Lemma max_setin g x: 
+  x \in g -> x <= max_set g.
+Proof.
+elim: g=> //= a l IH; rewrite ?inE leq_max=> /orP[/eqP->|/IH->]; 
+by rewrite (leqnn, orbT).
+Qed.
+
+Lemma max_subset f g: {subset f <= g} -> max_set f <= max_set g.
+Proof.
+elim: f g=> //= a f IH g s; rewrite geq_max; apply/andP; split.
+- exact/max_setin/(s a)/mem_head.
+by apply/IH=> ? I; apply/s; rewrite inE I orbT.
+Qed.
+
+Lemma max_set_le {f h: {fset Var}} {k : Var}: 
+  max_set f <= k -> h `<=` f ->
+  max_set h <= k.
+Proof. move=> ? /fsubsetP /max_subset; slia.  Qed.
+
+Lemma max_add {f :{fset Var}} {k}: 
+  max_set f <= k -> max_set ([fset k.+1; k.+2] `|` f) <= k.+3.
+Proof.
+move=> ?. apply/(@leq_trans (max_set (k.+1 :: k.+2 :: f))).
+- apply/max_subset=> ?; by rewrite ?inE orbA.
+rewrite /= ?geq_max; apply/and3P; split; slia.
+Qed.
+
+Lemma foldr_monoid {T : Type} {f : T -> T -> T} {n s1 s2}: 
+  associative f ->
+  (forall x, f n x = x) ->
+  (forall x, f x n = x) ->
+  f (foldr f n s1) (foldr f n s2) =
+  foldr f n (s1 ++ s2).
+Proof. by move=> A L R; elim: s1=> //= ??; rewrite -A=>->. Qed.
+
+Lemma max_setU f g: 
+  max_set (f `|` g) = maxn (max_set f) (max_set g).
+Proof.
+have->: maxn (max_set f) (max_set g) = max_set (f ++ g).
+exact/(foldr_monoid maxnA max0n maxn0).
+have /andP/anti_leq //: ((max_set (f `|` g) <= max_set (f ++ g)) /\ 
+      (max_set (f ++ g) <= max_set (f `|` g)))%type.
+split; apply/max_subset=> ?; by rewrite ?inE mem_cat.
+Qed.
+
+
+Lemma max_set_le2 {f g h : {fset Var}} {k}: 
+  max_set f <= k -> max_set g <= k -> h `<=` f `|` g ->
+  max_set h <= k.
+Proof.
+move=> s1 s2 ?.
+by apply/(@max_set_le (f `|` g))=> //; rewrite max_setU geq_max s1 s2.
+Qed.
+
+Lemma mem_max_set f k:
+  max_set f <= k -> {in f, forall x, x <= k}.
+Proof. move=> ?? /max_setin; slia. Qed.
+
+Lemma mem_max_set' f k:
+  max_set f < k -> {in f, forall x, x < k}.
+Proof. move=> ?? /max_setin; slia. Qed.
+
+
+Fixpoint VTree (t : Tree) : {fset Var} :=
+  match t with
+  | RET e        => FVExp e
+  | LET v x t    => v |` (FVExp x `|` VTree t)
+  | COND c t1 t2 => FVCntr c `|` VTree t1 `|` VTree t2
+  | HT v u x t     => [fset v; u; x] `|`  (VTree t)
+  end.
+
+Definition maxvar (t : Tree) : Var := max_set (VTree t).
 
 Definition dev_Prog (f : Prog) (e : seq Exp) := 
   let: DEFINE n vs t := f in
   let: s := size e in
-  DEFINE n (drop s vs) (dev t (fmap_of vs e, [::])).
+  DEFINE n (drop s vs) (dev (maxvar t) t (fmap_of vs e, [::])).
 
 Section SubstTh.
 
 Lemma substE (e1 e2 : Env) : 
   (forall v : Var, v /s/ e1 = v /s/ e2) -> e1 = e2.
 Proof.
-by move=> E; apply/fsfunP=> [[n]]; move: (E (VAR n)).
+by move=> E; apply/fsfunP=> [n]; move: (E n).
 Qed.
 
 Lemma substP (f : Exp -> Exp) (env : Env): 
@@ -197,10 +371,9 @@ rewrite /fsfun_of_fun /fsfun_of_ffun Fsfun.of_ffunE.
 by case: insubP=> [[/=??->->]|/negbTE->].
 Qed.
 
-Lemma emsubv v: 
+Lemma emsubv (v : Var): 
   emsub v = v.
 Proof. by rewrite fsfun_dflt /= ?finsupp0 ?inE. Qed.
-
 
 Lemma comp_env x e1 e2: 
   x /s/ (comp e1 e2) = (x /s/ e1) /s/ e2.
@@ -237,79 +410,211 @@ Definition FVRestr (r : Restr) : {fset Var} :=
 
 Section FreeValTh.
 
+Lemma finsupp_fsfun {s : {fset Var}} {f : Var -> Exp}: 
+  finsupp ([fsfun x in s => f x] : {fsfun Var -> Exp for id}) `<=` s.
+Proof.
+apply/fsubsetP=> ?; rewrite mem_finsupp fsfunE; case: ifP=> //.
+by rewrite eq_refl.
+Qed.
+
+Definition whole_env (e : Env)  := 
+  [fset x | a in finsupp e, x in FVExp (e a)].
+
+Lemma mem_whole_env x e: 
+  reflect (exists2 y, y \in finsupp e & (x \in FVExp (e y)))
+  (x \in whole_env e).
+Proof.
+apply/(iffP idP)=> [/imfset2P[y ? [? /[swap]<- ?]]|[y *]].
+- by exists y.
+apply/imfset2P; exists y=> //; by exists x.
+Qed.
+
+Definition whole_rs (rs : seq Restr) := 
+  [fset x | a in rs, x in FVRestr a].
+
+Lemma mem_whole_rs x rs: 
+  reflect (exists2 y, (y \in rs) & (x \in FVRestr y))
+  (x \in whole_rs rs).
+apply/(iffP idP)=> [/imfset2P[y ? [? /[swap]<- ?]]|[y *]].
+- by exists y.
+apply/imfset2P; exists y=> //; by exists x.
+Qed.
+
 Definition whole (e : Cenv) : {fset Var} :=
-  [fset x | a in finsupp e.1, x in FVExp (e.1 a)] `|`
-  [fset x | a in e.2, x in FVRestr a].
+  whole_env e.1 `|` whole_rs e.2.
+
+Lemma whole_env_substin (env : Env) v: 
+  v \in finsupp env ->
+  FVExp (env v) `<=` whole_env env.
+Proof. move=> ?; apply/fsubsetP=> ??; apply/mem_whole_env; by exists v. Qed.
+
+Lemma whole_env_subst (env : Env) (e : Exp): 
+  FVExp (e /s/ env) `<=` FVExp e `|` whole_env env.
+Proof.
+elim: e=> /= [[[]|v]|? IHe1 ? IHe2] //=.
+- case: (boolP (v \in finsupp env))=> [?|?].
+  apply/(fsubset_trans (whole_env_substin _ _ _))=> //.
+  by rewrite fsubsetUr.
+  by rewrite fsfun_dflt //= fsubsetUl.
+rewrite fsubUset; apply/andP; split.
+- apply/(fsubset_trans IHe1).
+  by rewrite [FVExp _ `|` FVExp _]fsetUC -fsetUA fsubsetUr.
+apply/(fsubset_trans IHe2); by rewrite -fsetUA fsubsetUr.
+Qed.
+
 
 Lemma whole_subst (env : Env) (rs : seq Restr) (e : Exp): 
   FVExp (e /s/ env) `<=` FVExp e `|` whole (env, rs).
-Proof. Admitted.
+Proof. by rewrite /whole fsetUA /= fsubsetU // whole_env_subst. Qed.
 
 Lemma whole_restr {e rs r}: 
   whole (e, r :: rs) = FVRestr r `|` whole (e, rs).
-Proof. Admitted.
+Proof.
+rewrite /whole /= fsetUC [whole_env _ `|` _]fsetUC fsetUA.
+apply/congr2=> //; apply/fsetP=> ?; rewrite inE.
+apply/(sameP idP)/(iffP idP)=> [/orP[]I|/mem_whole_rs[]].
+- apply/mem_whole_rs; exists r=> //=; by rewrite inE eq_refl.
+- case/mem_whole_rs: I=> y I *. apply/mem_whole_rs; exists y=> //.
+  by rewrite inE orbC I.
+move=> x; rewrite inE=> /orP[/eqP->-> //|??]; apply/orP; right.
+by apply/mem_whole_rs; exists x.
+Qed.
 
 Lemma whole_with {env : Env} {v : Var} {e : Exp} {rs}: 
   whole ([fsfun env with v |-> e], rs) `<=` v |` (FVExp e) `|` whole (env, rs).
-Proof. Admitted.
-
-Lemma whole_comp {env : Env} {v : Var} {e : Exp} {rs}: 
-  whole (comp env [fsfun emsub with v |-> e], rs) `<=` v |` (FVExp e) `|` whole (env, rs).
-Proof. Admitted.
-
-Lemma whole_cas {v a env rs}: 
-  whole (env, [seq cas v a i | i <- rs]) `<=`
-  FVArg a `|` whole (env, rs).
-Proof. Admitted.
-
-Lemma whole_var (env : Env) (e : Exp) (v : Var) rs: 
-  e /s/ env = v -> 
-  v \in FVExp e `|` whole (env, rs).
-Proof. Admitted.
-
-(*Lemma fv_env e env : 
-  FVExp (e /s/ env) `<=` 
-  FVExp e `|` [fset x | a in finsupp env, x in FVExp (env a)] .
 Proof.
-elim: e=> [[[]?|[]]|] /=.
-- 
-Qed.*)
-
-Lemma FVExp_var (v : Var): FVExp v = [fset v].
-Proof. by case: v. Qed.
-
-Definition aux (e : Env) (f : {fset Var}): {fset Var} . Admitted.
-
-Lemma aux_CONS e a: 
-  aux e (FVCntr (CONS? a)) = FVExp (a /s/ e).
-Proof. Admitted.
-
-Lemma aux_EQA e a1 a2: 
-  aux e (FVCntr (EQA? a1 a2)) = FVExp (a1 /s/ e) `|` FVExp (a2 /s/ e).
-Proof. Admitted.
-
-Lemma auxE e c rs: 
-  aux e (FVCntr c) `<=` FVCntr c `|` whole (e, rs).
-Proof. Admitted.
-
-Lemma memNwhole rs v env env'  e1 u: 
-  u \notin whole (env, rs) ->
-  (v == u) = false ->
-  (env v) /s/ [fsfun env' with u |-> e1] = 
-  (env v) /s/ env'.
-Proof. Admitted.
-
-Lemma whole_cons rs (env : Env) (v : Var) e1 e2: 
-  env v = CONS e1 e2 -> 
-  ((FVExp e1 `<=` whole (env, rs)) * (FVExp e2 `<=` whole (env, rs)))%type.
-Proof. Admitted.
-
-Lemma FVExp_cons (v u : Var) : FVExp (CONS u v) = [fset u; v].
-Proof. by case: u; case: v. Qed.
+rewrite -fsetUA fsubsetU //; apply/orP; right.
+rewrite /whole /= fsetUA fsetSU //.
+apply/fsubsetP=> ? /mem_whole_env[x].
+rewrite finsupp_with; case: ifP=> [/eqP->|].
+- rewrite fsfun_withE ?inE. case: ifP=> //= ???; apply/orP; right.
+  by apply/mem_whole_env; exists x.
+rewrite ?inE fsfun_withE; case: ifP=> //= [???->//|*]; apply/orP; right.
+by apply/mem_whole_env; exists x.
+Qed.
 
 Lemma comp_var (v : Var) env env': 
   comp env env' v = (env v) /s/ env'.
 Proof. by rewrite -[comp env env' v]/(v /s/ (comp env env')) comp_env. Qed.
+
+
+Lemma whole_comp {env : Env} {v : Var} {e : Exp} {rs}: 
+  whole (comp env [fsfun emsub with v |-> e], rs) `<=` (FVExp e) `|` whole (env, rs).
+Proof.
+rewrite /whole /= fsetUA fsetSU //.
+apply/fsubsetP=> ? /mem_whole_env[x]; rewrite comp_var /comp.
+rewrite inE=> /(fsubsetP finsupp_fsfun); rewrite inE.
+case: (boolP (x \in finsupp env))=> /= [? _|?].
+- move/(fsubsetP (whole_env_subst _ _)); rewrite inE=> /orP[?|].
+  apply/orP; right; apply/mem_whole_env; by exists x.
+- case/mem_whole_env=> ?; rewrite finsupp_with; case: ifP=> [|?].
+  - by rewrite finsupp0 ?inE andbF.
+  by rewrite ?inE orbF=> /eqP->; rewrite fsfun_with=>->.
+rewrite finsupp_with; case: ifP; first by rewrite finsupp0 ?inE andbF.
+rewrite ?inE orbF fsfun_dflt // => ? /eqP-> /=.
+by rewrite fsfun_with=>->. 
+Qed.
+
+Lemma whole_cas {v a env rs}: 
+  whole (env, [seq cas v a i | i <- rs]) `<=`
+  FVArg a `|` whole (env, rs).
+Proof.
+rewrite /whole /= [FVArg _ `|` _]fsetUC -fsetUA fsetUS //.
+apply/fsubsetP=> x /mem_whole_rs[y /mapP[z]].
+rewrite /cas. case: z=> [r1 r2|].
+- case: ifP=> [/eqP->|].
+  - case: ifP=> [/eqP-> ? -> /=|]. 
+    - rewrite fsetUid inE=>->; by rewrite orbT.
+    move=> ?? -> /=; rewrite ?inE=> /orP[->|H]; first by rewrite orbT.
+    apply/orP; left; apply/mem_whole_rs; exists (v ≠ r2)=> //=.
+    by rewrite ?inE H orbT.
+  - case: ifP=> [/eqP-> ?? -> /=|].
+    - rewrite ?inE=> /orP[H|->]; last by rewrite orbT.
+    apply/orP; left; apply/mem_whole_rs; exists (r1 ≠ v)=> //=.
+    by rewrite ?inE H.
+  move=> ??? -> ?; rewrite ?inE.
+  apply/orP; left; apply/mem_whole_rs; by exists (r1 ≠ r2)=> //=.
+move=> u ? -> /= ?; rewrite ?inE.
+apply/orP; left; apply/mem_whole_rs; by exists (NCONS u)=> //=.
+Qed.
+
+Definition aux (e : Env) (f : {fset Var}): {fset Var} :=
+  [fset x | a in f, x in FVExp (e a)].
+
+Lemma mem_aux (e : Env) (f : {fset Var}) x: 
+  reflect (exists2 y, y \in f & x \in FVExp (e y))
+  (x \in aux e f).
+Proof.
+apply/(iffP idP)=> [/imfset2P[y ? [? /[swap]-> ?]]|[y ??]].
+- by exists y.
+apply/imfset2P; exists y=> //; by exists x.
+Qed.
+
+Lemma auxU f g e: aux e (f `|` g) = aux e f `|` aux e g.
+Proof.
+apply/fsetP=> ?; apply/(sameP idP)/(iffP idP); rewrite ?inE.
+- by case/orP=> /mem_aux[x I ?]; apply/mem_aux; exists x=> //; rewrite ?inE I ?orbT.
+case/mem_aux=> x.
+by rewrite ?inE=> /orP[] I ?; apply/orP; [left | right]; apply/mem_aux; exists x.
+Qed.
+
+Lemma aux_FVExp e a : aux e (FVExp a) = FVExp a /s/ e.
+Proof.
+elim: a=> [|? IH1 ? IH2] /=; last by rewrite auxU IH1 IH2.
+- case=> [[]?|v] //=; apply/fsetP=> ?; apply/(sameP idP)/(iffP idP).
+  - by rewrite inE.
+  - case/mem_aux=> ?; by rewrite inE.
+  - move=> ?; apply/mem_aux; exists v=> //; by rewrite ?inE.
+  by case/mem_aux=> ?; rewrite ?inE=> /eqP->.
+Qed.
+
+
+Lemma aux_CONS e a: 
+  aux e (FVCntr (CONS? a)) = FVExp (a /s/ e).
+Proof.
+move=> /=; have->: FVArg a = FVExp a by case: a=> [[]|].
+exact/aux_FVExp.
+Qed.
+
+Lemma aux_EQA e a1 a2: 
+  aux e (FVCntr (EQA? a1 a2)) = FVExp (a1 /s/ e) `|` FVExp (a2 /s/ e).
+Proof. by move=> /=; rewrite auxU ?aux_FVExp. Qed.
+
+Lemma auxE e c rs: 
+  aux e (FVCntr c) `<=` FVCntr c `|` whole (e, rs).
+Proof.
+apply/fsubsetP=> y /mem_aux[x I]. 
+rewrite -[e x]/((Exp_Arg (Arg_Var x)) /s/ e)=> /(fsubsetP (whole_subst _ rs _)).
+move=> /=; rewrite 2?inE => /orP[/eqP->|H]; first by rewrite inE I.
+by rewrite inE H orbT.
+Qed.
+
+Lemma memNwhole k rs v env env'  e1 l: 
+  max_set (whole (env, rs)) <= k ->
+  v < l -> k < l ->
+  (env v) /s/ [fsfun env' with l |-> e1] = 
+  (env v) /s/ env'.
+Proof.
+move/mem_max_set=> m ??.
+case: (boolP (v \in finsupp env))=> [/whole_env_substin H|?].
+- have: forall x, x \in FVExp (env v) -> x <= k.
+  move=> ? /(fsubsetP H) I; apply/m; by rewrite inE /= I.
+  elim: (env v)=> [[[]|u /(_ _ (fset11 _))]|] //=.
+  - rewrite fsfun_withE; case: ifP; slia.
+  move=> ? IHe1 ? IHe2 I; rewrite IHe1 ?IHe2 //; 
+  by move=> ? I'; apply/I; rewrite ?inE I' ?orbT.
+rewrite fsfun_dflt //= fsfun_withE; case: ifP; slia.
+Qed.
+
+Lemma whole_cons rs (env : Env) (v : Var) e1 e2: 
+  env v = CONS e1 e2 -> 
+  ((FVExp e1 `<=` whole (env, rs)) * (FVExp e2 `<=` whole (env, rs)))%type.
+Proof.
+case: (boolP (v \in finsupp env))=> [/whole_env_substin|?].
+- move=> /[swap]-> /=; rewrite fsubUset /whole /= => /andP[H1 H2].
+  by rewrite ?fsubsetU // (H1, H2).
+by rewrite fsfun_dflt.
+Qed.
 
 End FreeValTh.
 
@@ -354,19 +659,49 @@ by move=> ?; rewrite inE=> /orP[/eqP[->]|]//; case: H1=> ? H /H.
 Qed.
 
 Lemma ncontr_eq e rs v u: 
-  ncontr_env e (v ≠ u :: rs) =
+  ncontr_env e (v ≠ u :: rs) <->
   (ncontr_env e rs /\ ncontr_neq e v u).
 Proof.
-(*split=> [][] H1 H2; do ?split.
+split=> [][] H1 H2; do ?split.
 - by move=> ?? I; apply/H1; rewrite ?inE I orbT.
 - by move=> ? I; apply/H2; rewrite ?inE I orbT.
-- by apply/H2; rewrite ?inE eq_refl.*) Admitted.
+- by apply/H1; rewrite ?inE eq_refl.
+- by move=> ??; rewrite inE=> /orP[/eqP[->->]|]//; case: H1=> H ? /H.
+by move=> ?; rewrite inE=> /orP[]//; case: H1=> ? H /H.
+Qed.
 
 Lemma ncontr_whole env' env v rs e: 
-  v \notin whole (env', rs) ->
+  max_set (whole (env', rs)) < v ->
   ncontr_env env rs ->
   ncontr_env [fsfun env with v |-> e] rs.
-Proof. Admitted.
+Proof.
+move/mem_max_set'=> H.
+have: {in whole_rs rs, forall x : nat, x < v}=> [? I|{H}H].
+- by apply/H; rewrite /whole /= ?inE I orbT.
+case=> H1 H2; split=> [r1 r2 I|].
+  - have: {subset FVRestr (r1 ≠ r2) <= whole_rs rs}.
+    move=> ??; apply/mem_whole_rs; by exists (r1 ≠ r2).
+  case: r1 r2 I=> [[? [[? /H1 //]|u /H1 N I]]|] /=.
+  - have ?: u < v.
+    - by apply/H/I=> /=; rewrite ?inE eq_refl.
+    move=> ? /= /[dup] ?; rewrite fsfun_withE; case: ifP; try slia.
+    move=> *; exact/N.
+  move=> u [[? /H1 N I]|] /=.
+    - have ?: u < v by apply/H/I=> /=; rewrite ?inE eq_refl.
+      move=> /[swap] ? /= /[dup] ?; rewrite fsfun_withE; case: ifP; try slia.
+    move=> *; exact/N.
+  move=> u' /H1 N I .
+  - have ?: u < v by apply/H/I=> /=; rewrite ?inE eq_refl.
+  - have ?: u' < v by apply/H/I=> /=; rewrite ?inE eq_refl orbT.
+  move=> /[dup] ? /[dup] ? /=; rewrite ?fsfun_withE; do ?case: ifP; try slia.
+  move=> *; exact/N.
+move=> [[]|] // u I.
+have: {subset FVRestr (NCONS u) <= whole_rs rs}.
+move=> ??; apply/mem_whole_rs; by exists (NCONS u).
+move: I=> /[swap] /= I /H2 N.
+- have ? : u < v by apply/H/I; rewrite ?inE eq_refl.
+rewrite /ncontr_ncons /= fsfun_withE; case: ifP; slia.
+Qed.
 
 End ContradictTh.
 
@@ -422,7 +757,7 @@ rewrite ?comp_env; case E''': (_ /s/ e1)=> // [[[]a|v]].
   case E': (e2 v)=> // [[[]|]] //; case: ifP=> [/eqP AA ? [/(_ _ _ I)]|].
   - rewrite -AA in E'.
     by case: Eq=> [][->->]; rewrite /ncontr_neq /= E' /==>/(_ erefl erefl).
-  move=> /eqP ??; split=> //. rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+  move=> /eqP ??; split=> //=. split=> //; apply/ncontr_eq; split=> // => ?? /=. 
   by rewrite E'=> [[/esym]].
   by rewrite whole_restr fsubUset fsubsetUr aux_EQA E''' E'' /= fsetU0 fset0U fsub1set fsetU11.
 move=> /=; case E: (e2 v)=> // [[[]|]]//.
@@ -431,7 +766,7 @@ case E'''': (_ /s/ e1)=> // [[[]|u]] //.
   case: ifP=> // [/eqP<-|/eqP AA].
   - move=> /cont_isEQ[r1 [r2 [I Eq]]] ? [/(_ _ _ I)].
     by case: Eq=> [][->->]; rewrite /ncontr_neq /= E /==>/(_ erefl erefl).
-  move=> *; split=> //. rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+  move=> *; split=> //. split=> //; apply/ncontr_eq; split=> // => ?? /=. 
   by rewrite E=> [[]].
   by rewrite whole_restr fsubUset fsubsetUr aux_EQA E''' /= E'''' /= fsetU0 fsub1set fsetU11.
 move=> /=; case E': (e2 _)=> // [[[]|]] // ?.
@@ -440,7 +775,7 @@ case: ifP=> //; case: ifP=> //; case: ifP=> [/eqP AA|].
   move=> /cont_isEQ[r1 [r2 [I Eq]]] ? [/(_ _ _ I)].
   by case: Eq=> [][->->]; rewrite /ncontr_neq /= E' E /==>/(_ erefl erefl).
 move=> /eqP ???? []<-; split=> //=.
-rewrite (ncontr_eq, fsubsetUr) //; (do? split=> //) => ?? /=. 
+split=> //; apply/ncontr_eq; split=> // => ?? /=. 
 by rewrite E E'=> [[]].
 by rewrite whole_restr fsubUset fsubsetUr aux_EQA /= E''' E'''' /= fsubsetUl.
 Qed.
@@ -485,8 +820,8 @@ case E: (_ /s/ e1)=> [[[]|v]|] //= C; first by case: ifP.
       by case: C=> /(_ _ _ I H1 H2).
     by move=> ? I [->]; case: C=> ? /(_ _ I).
     apply/(fsubset_trans whole_comp).
-    rewrite aux_EQA E /= fsetU0 fsubUset [_ `|` [fset v]]fsetUC fsub1set -fsetUA fsetU11 /=.
-    by apply/(fsubset_trans whole_cas)=> /=; rewrite fset0U fsetUA fsubsetUr.
+    rewrite aux_EQA E /= fset0U. 
+    by apply/(fsubset_trans whole_cas)=> /=; rewrite fset0U fsubsetUr.
 case E: (e2 _)=> // [[[]|]] //.
 case G: (_ /s/ e1)=> // [[[]a1|u]] //=.
 - move=> + a; case: ifP=> // C C' [<-<-<-?]/=.
@@ -508,7 +843,7 @@ case G: (_ /s/ e1)=> // [[[]a1|u]] //=.
     by case: C'=> /(_ _ _ I H1 H2).
   by move=> ? I [->]; case: C'=> ? /(_ _ I).
   apply/(fsubset_trans whole_comp).
-  rewrite aux_EQA G /= fsetU0 R /= fsubUset fsetU0 fsub1set fsetU11 /=.
+  rewrite aux_EQA G /= fset0U R. 
   by apply/(fsubset_trans whole_cas)=> /=; rewrite fset0U fsubsetUr.
 case E': (e2 u)=> // [[[]|]] // +?; case: ifP=> //; case: ifP=> //.
 move=> C ? C' [<-<-<-?]/=.
@@ -530,8 +865,8 @@ rewrite E E'; case: ifP=> // /eqP A [<-]; split; first split.
   by case: C'=> /(_ _ _ I H1 H2).
 by move=> ? I [->]; case: C'=> ? /(_ _ I).
 apply/(fsubset_trans whole_comp)=> /=.
-rewrite aux_EQA R G /= fsubUset fsubsetUl /=.
-by apply/(fsubset_trans whole_cas)=> /=; rewrite [[fset v; u]]fsetUC -fsetUA fsetUS // fsubsetUr.
+rewrite aux_EQA R G /= fsubUset [[fset v; u]]fsetUC -fsetUA fsubsetUl /=.
+by apply/(fsubset_trans whole_cas)=> /=; rewrite fsetUS // fsubsetUr.
 Qed.
 
 Lemma dev_contr_CBOTH2 {e2 e1 : Env}
@@ -559,18 +894,19 @@ move=> ?.
   case E': (_ /s/ e1)=> [[[]|]|]//= ?; first by case:ifP.
   rewrite /both; case: ifP=> //=  + [<-?<-<-]/=.
   case E: (e2 _)=> // [[[]|]] //; case: ifP=> [/eqP-> ?|] //.
-  move=> /eqP N ? [<-]; split=> //. rewrite (ncontr_eq, fsubsetUr) //.
-  split=> //; split=> // ?? /=; by rewrite E=> /esym [].
+  move=> /eqP N ? [<-]; split=> //. 
+  split=> //; apply/ncontr_eq; split=> // => ?? /=. 
+  by rewrite E=> /esym [].
   by rewrite whole_restr /= aux_EQA E' /= fsetU0 -fsetUA fsubsetUr.
 case E: (e2 _)=> // [[[]|]] //.
 case E': (_ /s/ e1)=> // [[[]|]] //=.
 - move=> ?; case: ifP=> // ? [<-?<-<-]/=; rewrite E; case: ifP=> /eqP AA // [<-].
-  split=> //. rewrite (ncontr_eq, fsubsetUr) //; split=> //.
-  by split=> // ?? /=; rewrite E=> [[]].
+  split=> //. split=> //; apply/ncontr_eq; split=> // => ?? /=. 
+  by rewrite E=> [[]].
   by rewrite whole_restr /= aux_EQA E'' /= fsetU0 [_ |` FVExp _]fsetUC -fsetUA fsubsetUr.
 move=> /=; case E''': (e2 _)=> // [[[]|]] // ?; case: ifP=> //; case: ifP=> //.
 move=> ?? [<-?<-<-] /=; rewrite E''' E; case: ifP=> // /eqP ? [<-].
-split=> //. rewrite (ncontr_eq, fsubsetUr) //; split=> //; split=> // ??.
+split=> //. split=> //; apply/ncontr_eq; split=> // => ?? /=. 
 by rewrite /= E E'''=> [[]].
 by rewrite whole_restr /= aux_EQA E'' E' /=.
 Qed.
@@ -598,93 +934,154 @@ case: (_ /s/ e1)=> [[[]|]|???+[<-]] /=.
 by case: (e2 _).
 Qed.
 
-Fixpoint well_typed (t : Tree) (e : {fset Var}) : bool := 
+Fixpoint well_typed (t : Tree) : bool := 
   match t with 
   | RET _ => true
-  | LET v x t => well_typed t (v |` FVExp x `|` e)
-  | COND c t1 t2 => 
-     well_typed t1 (FVCntr c `|` e) &&
-     well_typed t2 (FVCntr c `|` e)
-  | HT v u _ x t => 
-    [&& x != v, x != u,
-        v \notin e, u \notin e &
-        well_typed t (v |` (u |` (x |` e)))]
+  | LET v x t => well_typed t
+  | COND c t1 t2 =>  well_typed t1 && well_typed t2 
+  | HT v u x t => [&& x != v, x != u, v != u & well_typed t]
   end.
-
-Lemma well_typed_subset e2 {e1 : {fset Var}} {t}:
-  e1 `<=` e2 ->
-  well_typed t e2 -> well_typed t e1.
-Proof.
-elim: t e1 e2=> //= [??? IH ??? /IH|c? IHt1 ? IHt2 ? e2 ? /andP[/IHt1 H1 /IHt2 H2]|].
-- by apply; rewrite fsetUS.
-- by rewrite (IHt1 _ (FVCntr c `|` e2)) 1?(IHt2 _ (FVCntr c `|` e2)) ?fsetUS ?(H1, H2).
-move=> ????? IH ?? /[dup]/fsubsetP S? /and5P[->->] /negP H1 /negP H2 /IH H /=.
-by rewrite H ?fsetUA ?fsetUS // andbT; apply/andP; split; apply/negP=> /S.
-Qed.
 
 Arguments whole : simpl never.
 
+Lemma subst_max (e1 e2 : Env) (e : Exp) : 
+  (forall x, x <= maxvar e -> e1 x = e2 x) ->
+  e /s/ e1 = e /s/ e2.
+Proof.
+elim: e=> [[[]|?]|? IHe1 ? IHe2 I] //=; first apply.
+- rewrite /maxvar /=; apply/max_setin; by rewrite ?inE.
+  by rewrite IHe1 ?IHe2 //; move=> ? I'; apply/I; rewrite /maxvar /=;
+rewrite max_setU leq_max I' ?orbT.
+Qed.
 
-Lemma int_dev (t : Tree) (e1 e2 : Env) (rs : seq Restr): 
-  well_typed t (whole (e1, rs)) ->
+Lemma int_maxvar (e1 e2 : Env) t: 
+  (forall x, x <= maxvar t -> e1 x = e2 x) ->
+  int t e1 = int t e2.
+Proof.
+elim: t e1 e2=> /= [*|??? IHt ?? I|c ? IHt1 ? IHt2|?? v ? IHt e1 e2 I].
+- exact/subst_max.
+- apply/IHt=> ?. rewrite ?fsfun_withE /maxvar/= => l; case:ifP=> [/eqP ?|?].
+  - apply/subst_max=> ?; rewrite /maxvar /= => m; apply/I.
+    by rewrite /maxvar /= ?max_setU ?leq_max m ?orbT.
+  by apply/I; rewrite /maxvar /= ?max_setU ?leq_max l ?orbT.
+- case: c=> [[[a ?? I]|v e1 e2 I]|] /=.
+  - apply/IHt2=> ?; rewrite /maxvar /= => I'; apply/I.
+    by rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+  - have->: e1 v = e2 v.
+    - apply/I; rewrite /maxvar /= ?max_setU ?leq_max.
+      by rewrite max_setin // /FVCntr /= ?inE.
+    by case E: (e2 v); [apply/IHt2 | apply/IHt1]; move=> ?; rewrite /maxvar /= =>I';
+    apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+  move=> e e' e1 e2 I.
+  have->: (e /s/ e1 = e /s/ e2).
+  - apply/subst_max=> ?; rewrite /maxvar /==> I'.
+    by apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+  case: (e /s/ e2)=> // [[[]|]] //= ?.
+  have->: (e' /s/ e1 = e' /s/ e2).
+  - apply/subst_max=> ?; rewrite /maxvar /==> I'.
+    by apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+  by case: (e' /s/ e2)=> // [[]] // [?]; case: ifP=> ?;
+  [apply/IHt1 | apply/IHt2]; move=> ?; rewrite /maxvar /= =>I';
+  apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+have->: e1 v = e2 v.
+- apply/I.
+  rewrite /maxvar /= ?max_setU ?leq_max [v <= max_set [fset v]]max_setin ?orbT //.
+  by rewrite ?inE.
+case: (e2 v)=> // ??; apply/IHt=> ?; rewrite /maxvar /= => I'.
+rewrite ?fsfun_withE; do? case: ifP=>//.
+by move=> *; apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
+Qed.
+
+Lemma l k: (k.+2 == k.+1) = false.
+Proof. by apply/eqP=> /esym /n_Sn. Qed.
+
+
+Lemma int_dev (t : Tree) (e1 e2 : Env) (rs : seq Restr) k: 
+  well_typed t -> max_set (whole (e1, rs)) <= k ->
+  maxvar t <= k ->
   int t (comp e1 e2) <> '0 ->
   ncontr_env e2 rs ->
-  int t (comp e1 e2) = int (dev t (e1, rs)) e2.
+  int t (comp e1 e2) = int (dev k t (e1, rs)) e2.
 Proof.
-elim: t e1 e2 rs => // [*|/= v e t IHt e1 e2 rs wf||].
+elim: t e1 e2 rs k => // [*|/= v e t IHt e1 e2 rs k wf m1 m2||].
 - by rewrite /= comp_env.
 - have <-: comp [fsfun e1 with v |-> e /s/ e1] e2 =
         [fsfun comp e1 e2 with v |-> e /s/ (comp e1 e2)].
   - apply/substE=> u; rewrite comp_env /= ?fsfun_withE.
     by case: ifP; rewrite -?[comp e1 e2 u]/(u /s/ (comp e1 e2)) comp_env.
   move=> *; rewrite -IHt //.
-  apply/(well_typed_subset _ _ wf)/(fsubset_trans whole_with).
-  by rewrite -?fsetUA fsetUS // fsubUset ?fsubsetUr whole_subst.
-move=> c t1 IHt1 t2 IHt2 e1 e2 rs /= /andP[] wf1 wf2 C.
+  - apply/(max_set_le2 m2 m1)/(fsubset_trans whole_with)=> /=.
+  - rewrite -?fsetUA fsetUS // fsubUset 1?fsetUA fsubsetUr -fsetUA.
+    by rewrite fsetUC -fsetUA fsubsetU // fsetUC whole_subst orbT.
+  by apply/(max_set_le m2)=> /=; rewrite fsetUA fsubsetUr.
+move=> c t1 IHt1 t2 IHt2 e1 e2 rs k /= /andP[] wf1 wf2 m1 m2 C.
 have NE : (cntr c (comp e1 e2) <> ERR) by move: C; case: (cntr _).
 case E : (dev_cntr _ _)=> [[]|[]|?[]??[]]/= N.
 - move/(dev_contr_CTRUE _ NE): E C=>/=[[->-> s]] ?.
-  rewrite -IHt1 //. apply/(well_typed_subset _ s).
-  apply/(well_typed_subset _ _ wf1).
-  by rewrite fsubUset auxE fsubsetUr.
+  rewrite -IHt1 //.
+  - apply/(max_set_le2 m2 m1)/(fsubset_trans s).
+    rewrite fsubUset fsubsetUr /= andbT.
+    apply/(fsubset_trans (auxE _ _ rs)).
+    by rewrite fsubUset fsubsetUr -?fsetUA fsubsetUl.
+  apply/(max_set_le m2)=> /=; by rewrite fsetUC fsetUA fsubsetUr.
 - move/(dev_contr_CFALSE NE N): E C=>/= [[-> ? s]] ?.
-  rewrite -IHt2 //. apply/(well_typed_subset _ s).
-  apply/(well_typed_subset _ _ wf2).
-  by rewrite fsubUset auxE fsubsetUr.
+  rewrite -IHt2 //. 
+  - apply/(max_set_le2 m2 m1)/(fsubset_trans s).
+    rewrite fsubUset fsubsetUr /= andbT.
+    apply/(fsubset_trans (auxE _ _ rs)).
+    by rewrite fsubUset fsubsetUr -?fsetUA fsubsetUl.
+    apply/(max_set_le m2)=> /=; by rewrite fsubsetUr.
 case E': (cntr _ e2).
   - move: E' C=> /[dup] /(dev_contr_CBOTH1 _ N NE E)[[->]] ? s /cntr_env_TRUE Eq ?.
-    rewrite -IHt1 //. apply/(well_typed_subset _ s).
-    apply/(well_typed_subset _ _ wf1).
-  by rewrite fsubUset auxE fsubsetUr.
+    rewrite -IHt1 //.
+  - apply/(max_set_le2 m2 m1)/(fsubset_trans s).
+    rewrite fsubUset fsubsetUr /= andbT.
+    apply/(fsubset_trans (auxE _ _ rs)).
+    by rewrite fsubUset fsubsetUr -?fsetUA fsubsetUl.
+  apply/(max_set_le m2)=> /=; by rewrite fsetUC fsetUA fsubsetUr.
   - move: E' C=> /[dup] /(dev_contr_CBOTH2 N NE E) [[->]] ? s /cntr_env_FALSE Eq ?.
-    rewrite -IHt2  // ?Eq //. apply/(well_typed_subset _ s).
-    apply/(well_typed_subset _ _ wf2).
-    by rewrite fsubUset auxE fsubsetUr.
+    rewrite -IHt2  // ?Eq //.
+  - apply/(max_set_le2 m2 m1)/(fsubset_trans s).
+    rewrite fsubUset fsubsetUr /= andbT.
+    apply/(fsubset_trans (auxE _ _ rs)).
+    by rewrite fsubUset fsubsetUr -?fsetUA fsubsetUl.
+    apply/(max_set_le m2)=> /=; by rewrite fsubsetUr.
   by move/(dev_contr_CBOTH3 NE E): E'.
-move=> v u /[dup] /negbTE nvu ? e t IHt e1 e2 rs /=.
-move=> /and5P[/negbTE yv /negbTE yu ve1 une1 s].
+move=> v u e t IHt e1 e2 rs k /= /and4P[/negbTE ev /negbTE eu /negbTE uv] x m' m.
 rewrite -[comp e1 e2 e]/(e /s/ (comp e1 e2)) comp_env /=.
 case E': (e1 e)=> /= [[[]|y]|e3 e4] //=.
   - case E: (e2 y)=> // [e3 e4].
-    have->: [fsfun comp e1 e2 with v |-> e3, u |-> e4] =
-        (comp [fsfun e1 with e |-> CONS v u, v |-> Exp_Arg v, u |-> Exp_Arg u]
-              [fsfun e2 with v |-> e3, u |-> e4]).
-    - apply/substE=> v0; rewrite comp_env /= ?fsfun_withE; case: ifP.
-      - by move/eqP->; rewrite eq_sym yv /= fsfun_with.
+    have ?: maxvar t <= k.
+    - apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
+    have H: 
+    int t [fsfun comp e1 e2 with v |-> e3, u |-> e4] =
+    int t (comp [fsfun e1 with 
+            e |-> CONS (Exp_Arg (k.+1 : Var)) (Exp_Arg (k.+2 : Var)),
+            v |-> Exp_Arg (k.+1 : Var),
+            u |-> Exp_Arg (k.+2 : Var)]
+         [fsfun e2 with k.+1 |-> e3, k.+2 |-> e4]).
+    apply/int_maxvar=> ??.
+    - rewrite comp_var /= ?fsfun_withE; case: ifP.
+      - by move/eqP->; rewrite eq_sym ev /= fsfun_with.
       case: ifP=> [/eqP-> UV|].
-      - by rewrite [u == e]eq_sym yu /= fsfun_withE UV fsfun_with.
+      - by rewrite [u == e]eq_sym eu /= fsfun_withE l fsfun_with.
       case: ifP=> [/eqP->|vy vu vv] /=.
-      - rewrite fsfun_with fsfun_withE [u == v]eq_sym nvu fsfun_with.
+      - rewrite fsfun_with fsfun_withE l fsfun_with.
         by rewrite -[comp e1 e2 e]/(e /s/ (comp e1 e2)) comp_env /= E' /= E.
-      by rewrite ?(memNwhole rs) // -[comp e1 e2 v0]/(v0 /s/ (comp e1 e2)) comp_env.
-    move=> ??; rewrite -IHt=> //.
-    apply/(well_typed_subset _ _ s)/(fsubset_trans whole_with)=> /=.
-    rewrite fsubUset [e |` _]fsetUC -?fsetUA ?fsetUS //= ?fsub1set ?fsetU11 //.
+      rewrite ?(memNwhole k rs) // ?comp_var //; slia.
+    move=> ??; rewrite -IHt -?H=> //; try slia.
+    have m2: maxvar (HT v u e t) <= k.+3 by slia.
+    apply/(max_set_le2 (max_add m') m2)/(fsubset_trans whole_with)=> /=.
+    rewrite [e |` _]fsetUC fsubUset -4?fsetUA ?fsetUS //=.
     apply/(fsubset_trans whole_with)=> /=.
-    rewrite fsubUset fsubUset fsub1set fsetU11 /= fsetUA [[fset v; u]]fsetUC fsetUA.
-    apply/(fsubset_trans whole_with)=> /=.
-    by rewrite fsetSU ?fsub1set // fsubUset -fsetUA fsubsetUl.
-    by apply/(ncontr_whole e1)=> //; apply/(ncontr_whole e1).
+    rewrite [[fset v; _]]fsetUC -fsetUA fsetUS // fsetUC [[fset v; u]]fsetUC //.
+    rewrite [[fset u; v] `|` _]fsetUC 3?fsetUA fsetSU //.
+    apply/(fsubset_trans whole_with)=> //=.
+    rewrite [[fset u; _]]fsetUC -3?fsetUA fsetUS // fsetUC 2?fsetUA fsetSU //.
+    rewrite -fsetUA fsubsetUl //.
+    by rewrite [e |` _]fsetUC ?fsetUA fsubsetUr.
+  apply/(ncontr_whole e1); try slia.
+  apply/(ncontr_whole e1); by slia.
 have->: [fsfun comp e1 e2 with v |-> e3 /s/ e2, u |-> e4 /s/ e2] =
         comp [fsfun e1 with v |-> e3, u |-> e4] e2.
 apply/substE=> ?; rewrite /= ?fsfun_withE; case: ifP=> [/eqP->|].
@@ -693,23 +1090,15 @@ case: ifP=> [/eqP-> UV|VU VV];
 by rewrite ?comp_var ?fsfun_withE ?eq_refl ?UV ?VV ?VU.
 move=> ??. rewrite -IHt=> //.
 case/(whole_cons rs): E'=> H1 H2.
-apply/(well_typed_subset _ _ s).
-apply/(fsubset_trans whole_with). 
-rewrite -fsetUA fsetUS // fsubUset; apply/andP; split.
-- by apply/(fsubset_trans H1); rewrite fsetUA fsubsetUr.
+apply/(max_set_le2 m m')/(fsubset_trans whole_with)=> /=.
+rewrite -?fsetUA fsetUS // fsubUset; apply/andP; split.
+- apply/(fsubset_trans H1); by rewrite 2?fsetUA fsubsetUr.
 apply/(fsubset_trans whole_with).
-rewrite -fsetUA fsetUS // fsubUset fsubsetUr andbT; apply/(fsubset_trans H2).
-by rewrite fsubsetUr.
+rewrite -?fsetUA fsetUS // fsubUset; apply/andP; split.
+- apply/(fsubset_trans H2); by rewrite fsetUA fsubsetUr.
+by rewrite fsetUA fsubsetUr.
+apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
 Qed.
-
-Lemma foldr_monoid {T : Type} {f : T -> T -> T} {n s1 s2}: 
-  associative f ->
-  (forall x, f n x = x) ->
-  (forall x, f x n = x) ->
-  f (foldr f n s1) (foldr f n s2) =
-  foldr f n (s1 ++ s2).
-Proof. by move=> A L R; elim: s1=> //= ??; rewrite -A=>->. Qed.
-
 
 Lemma fmap_cat e1 e2 t:
   size t = (size e1 + size e2)%N  ->
@@ -729,15 +1118,41 @@ Theorem int_dev_Prog (p : Prog) (e1 e2 : seq Exp):
   let: DEFINE n vs t := p in
   (size e1 + size e2)%N = size vs ->
   (forall x, x \in e1 -> closed x) ->
-  well_typed t fset0 ->
+  well_typed t ->
   int_Prog p (e1 ++ e2) <> '0 ->
   int_Prog p (e1 ++ e2) = int_Prog (dev_Prog p e1) e2.
 Proof. 
 case: p=> /= _ l ?? H ??; rewrite -int_dev // -?fmap_cat //.
-have/eqP-> //: whole (fmap_of l e1, [::]) == fset0.
+have/eqP->: whole (fmap_of l e1, [::]) == fset0; last by rewrite max_set0.
 rewrite /whole /= fsetU_eq0 -?fsubset0.
 apply/andP; split; apply/fsubsetP=> x /imfset2P[? //] /codomf_fmap_of/H /eqP->.
 by case.
+Qed.
+
+Definition x1  : Var := 1.
+Definition x2  : Var := 2.
+Definition yes : Val := '3.
+Definition no  : Val := '4.
+
+Notation "'If' c 'Then' t1 'Else' t2" := (COND c t1 t2) (at level 30).
+
+Definition example : Prog := 
+  DEFINE 1 [:: x1; x2] 
+    (If (CONS? x1) Then
+      (If (CONS? x2) Then
+        yes
+      Else no)
+    Else
+      (If (CONS? x2) Then
+        no
+      Else yes)).
+
+Lemma dev_example : 
+  dev_Prog example [:: CONS '3 '4] = 
+  DEFINE 1 [:: x2] (If (CONS? x2) Then yes Else no).
+rewrite /example /= /fmap_of /= ?comp_var ?fsfun_with /= ?comp_var fsfun_withE.
+have->: x2 == x1 = false by slia.
+by rewrite ?emsubv /= ?emsubv.
 Qed.
 
 
