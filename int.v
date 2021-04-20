@@ -178,12 +178,19 @@ Definition int_to_step (s1 s2 : State) (p : Programm) :=
   let: (t, e) := s1 in
   int t e p = s2.
 
-Inductive int_to := .
+Inductive int_to_steps (p : Programm) : State -> State -> Prop := 
+  | Base s : int_to_steps p s s
+  | Step s1 s2 : int_to_step s1 s2 p -> int_to_steps p s1 s2.
 
+Definition interpret_to (p : Programm) s e : Prop :=
+  ((e <> '0) *
+  (int_to_steps p s (RET e, emsub)))%type.
 
-Definition int_Prog (f : Prog) (e : seq Exp) := 
+Notation "s '-(' p ')-->' e" := (interpret_to p s e) (at level 30).
+
+(*Definition int_Prog (f : Prog) (e : seq Exp) := 
   let: DEFINE _ vs t := f in
-  int t (fmap_of vs e).
+  int t (fmap_of vs e).*)
 
 Lemma l (K V : choiceType) (k : K) (v x : V) (f : {fmap K -> V}) : 
   x \in codomf f.[k <- v] -> (x \in codomf f) || (v == x).
@@ -228,7 +235,8 @@ Fixpoint FVTree (t : Tree) : {fset Var} :=
   | RET e        => FVExp e
   | LET v x t    => (FVExp x `|` FVTree t) `\ v
   | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
-  | HT v u x t     => (FVExp x `|` FVTree t) `\ v `\ u
+  | HT v u x t   => (FVExp x `|` FVTree t) `\ v `\ u
+  | CALL f xs    => seq_fset tt xs
   end.
 
 Definition closed_sub (e : Env) := 
@@ -277,7 +285,7 @@ case=> //[][]. case: (_ /s/ _)=> //[][]//[] ??.
 by case:ifP=> // ?[->].
 Qed.
 
-Lemma closed_int t e: 
+(*Lemma closed_int t e: 
   FVTree t `<=` finsupp e -> 
   closed_sub e ->
   closed (int t e).
@@ -308,7 +316,7 @@ Theorem closed_int_Prog t vs f e:
 Proof.
 move=> /= /allP I ? S; apply/closed_int=> [|? /codomf_fmap_of /I]//.
 apply/fsubsetP=> ? /S; by rewrite domf_fmap_of. 
-Qed.
+Qed.*)
 
 
 
