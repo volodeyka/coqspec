@@ -152,29 +152,38 @@ Fixpoint get_func (f : FName) (p : Programm) : (Tree * seq Var)%type :=
 Definition fmap_of (ks : seq Var) (vs : seq Exp) : Env :=
   foldr comp emsub (map (fun '(a, b)=> [fsfun emsub with a |-> b]) (zip ks vs)).
 
-Definition State := (Tree * Env)%type.
-
-Fixpoint int (t : Tree) (e : Env) (p : Programm) : State := 
+Fixpoint int (n : nat) (t : Tree) (e : Env) (p : Programm) : Exp := 
   match t with
-  | RET x         => (RET (subst x e), emsub)
+  | RET x         => 
+    if n is n'.+1 then 
+      subst x e
+    else '0
   | LET v x t     => 
-    int t  [fsfun e with v |-> x /s/ e] p
+    if n is n'.+1 then
+      int n' t  [fsfun e with v |-> x /s/ e] p
+    else '0
   | COND c t' t'' => 
-    match cntr c e with
-    | TRUE e'   => int t'  e'  p
-    | FALSE e'' => int t'' e'' p
-    | ERR       => (RET '0, emsub)
-    end
+    if n is n'.+1 then
+      match cntr c e with
+      | TRUE e'   => int n' t'  e'  p
+      | FALSE e'' => int n' t'' e'' p
+      | ERR       => '0
+      end
+    else '0
   | HT v u x t => 
-    if x /s/ e is CONS a b then 
-      int t [fsfun e with v |-> a, u |-> b] p
-    else (RET '0, emsub)
+    if n is n'.+1 then
+      if x /s/ e is CONS a b then 
+        int n' t [fsfun e with v |-> a, u |-> b] p
+      else '0
+    else '0
   | CALL f args => 
-    let: (t, xs) := (get_func f p) in
-      (t, fmap_of xs (map e args))
+    if n is n'.+1 then
+      let: (t, xs) := (get_func f p) in
+        int n' t (fmap_of xs (map e args)) p
+    else '0
   end.
 
-Definition int_to_step (s1 s2 : State) (p : Programm) := 
+(*Definition int_to_step (s1 s2 : State) (p : Programm) := 
   let: (t, e) := s1 in
   int t e p = s2.
 
@@ -186,7 +195,7 @@ Definition interpret_to (p : Programm) s e : Prop :=
   ((e <> '0) *
   (int_to_steps p s (RET e, emsub)))%type.
 
-Notation "s '-(' p ')-->' e" := (interpret_to p s e) (at level 30).
+Notation "s '-(' p ')-->' e" := (interpret_to p s e) (at level 30).*)
 
 (*Definition int_Prog (f : Prog) (e : seq Exp) := 
   let: DEFINE _ vs t := f in
