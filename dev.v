@@ -949,7 +949,7 @@ Fixpoint well_typed (t : Tree) : bool :=
   | LET v x t => well_typed t
   | COND c t1 t2 =>  well_typed t1 && well_typed t2 
   | HT v u x t => [&& x != v, x != u, v != u & well_typed t]
-  | CALL f xs => true
+  | CALL f xs => size xs == size (get_func f p).2
   end.
 
 Arguments whole : simpl never.
@@ -1045,6 +1045,12 @@ Proof. Admitted.
 
 Lemma fmap_of0 xs: fmap_of xs [::] = emsub.
 Proof. by case: xs. Qed.
+
+Lemma fmap_ofcons v vs x xs: fmap_of (x :: xs) (v :: vs) = 
+  [fsfun fmap_of xs vs with x |-> v].
+Proof.
+  rewrite /fmap_of /=.
+Qed.
 
 
 Lemma int_dev (*(t : Tree) (e1 e2 : Env) (rs : seq Restr)*) f: 
@@ -1159,13 +1165,13 @@ by rewrite fsetUA fsubsetUr.
 apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
 
 move=> g l e1 e2 ?? [] // n. rewrite {1 2}/int -/int /=.
-case E: (get_func g)=> [vs xs]; rewrite /maxvar => N ? m1 m2 ?.
+case E: (get_func g)=> [vs xs]; rewrite /maxvar => N /= /eqP S  m1 m2 ?.
 have H: 
   int n vs (fmap_of xs [seq comp e1 e2 i | i <- l]) p =
   int n.+1 vs (comp (fmap_of xs [seq e1 i | i <- l]) e2) p.
 - rewrite int_not0 //; apply/int_freevar=> x.
   case: (well_typed_prog g)=> ?; rewrite E /==> /[apply].
-  elim: xs {E N}=> //= ??.
+  elim: xs l {E N m2} S=> //= ??? []//=.
   case: l {m2}=> //=; first rewrite fmap_of0 comp_var emsubv.
 rewrite -corr -?H ?leq_max /maxvar ?leqnn ?orbT // => //=.
 - by rewrite -[vs]/((vs, xs).1) -E well_typed_prog.
