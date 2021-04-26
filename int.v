@@ -150,7 +150,7 @@ Fixpoint get_func (f : FName) (p : Programm) : (Tree * seq Var)%type :=
   end.
 
 Definition fmap_of (ks : seq Var) (vs : seq Exp) : Env :=
-  foldr comp emsub (map (fun '(a, b)=> [fsfun emsub with a |-> b]) (zip ks vs)).
+  foldr (fun '(v, x) a => [fsfun a with v |-> x]) emsub (zip ks vs).
 
 Fixpoint int (n : nat) (t : Tree) (e : Env) (p : Programm) : Exp := 
   match t with

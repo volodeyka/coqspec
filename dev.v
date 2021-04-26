@@ -1048,18 +1048,11 @@ Proof. by case: xs. Qed.
 
 Lemma fmap_ofcons v vs x xs: fmap_of (x :: xs) (v :: vs) = 
   [fsfun fmap_of xs vs with x |-> v].
-Proof.
-  rewrite /fmap_of /=.
-Qed.
+Proof. by []. Qed.
 
 
-Lemma int_dev (*(t : Tree) (e1 e2 : Env) (rs : seq Restr)*) f: 
+Lemma correct_dev f : 
   correct f -> correct (dev f).
-  (*well_typed t -> max_set (whole (e1, rs)) <= k ->
-  maxvar t <= k ->
-  int t (comp e1 e2) <> '0 ->
-  ncontr_env e2 rs ->
-  int t (comp e1 e2) = int (dev k t (e1, rs)) e2.*)
 Proof.
 move=> corr * e1 e2 rs k t.
 elim: t e1 e2 rs k => // [/= +++++ n|/= v e t IHt e1 e2 rs k n|||].
@@ -1165,46 +1158,77 @@ by rewrite fsetUA fsubsetUr.
 apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
 
 move=> g l e1 e2 ?? [] // n. rewrite {1 2}/int -/int /=.
-case E: (get_func g)=> [vs xs]; rewrite /maxvar => N /= /eqP S  m1 m2 ?.
+case E: (get_func g)=> [vs xs]; rewrite /maxvar => N /eqP ++ m2.
+move=> /= S  m1 ?.
 have H: 
   int n vs (fmap_of xs [seq comp e1 e2 i | i <- l]) p =
   int n.+1 vs (comp (fmap_of xs [seq e1 i | i <- l]) e2) p.
 - rewrite int_not0 //; apply/int_freevar=> x.
   case: (well_typed_prog g)=> ?; rewrite E /==> /[apply].
-  elim: xs l {E N m2} S=> //= ??? []//=.
-  case: l {m2}=> //=; first rewrite fmap_of0 comp_var emsubv.
+  elim: xs l {E N m2} S=> //= ?? IHxs [] //= ?? [/IHxs IH].
+  rewrite ?fmap_ofcons ?inE ?comp_var ?fsfun_withE.
+  case: ifP=> //= ? /IH->; by rewrite comp_var.
 rewrite -corr -?H ?leq_max /maxvar ?leqnn ?orbT // => //=.
 - by rewrite -[vs]/((vs, xs).1) -E well_typed_prog.
 by apply/orP; left; apply/(max_set_le2 m1 m2)/(fsubset_trans whole_fmap).
 Qed.
 
+Lemma correct_devn f n: correct f ->
+  correct (iter n dev f).
+Proof. by elim: n=> // ? /[apply] /correct_dev. Qed.
+
+End Spec.
+
+Definition int_Prog n (main : Prog) (p : Programm) (xs : seq Exp) : Exp := 
+  let: DEFINE f vs t := main in 
+    int n t (fmap_of vs xs) p.
+
+Definition dev_Prog f (p : Programm) (xs : seq Exp) : Prog := 
+  match p with
+  | [::]   => DEFINE 0 [::] (RET '0)
+  | (DEFINE g vs t) :: _ => 
+    let: cenv := (fmap_of vs xs, [::]) in 
+    DEFINE g (drop (size xs) vs)
+        (dev p f (maxn (maxvar t) (max_set (whole cenv))) t cenv)
+  end.
+
+Definition well_typed_prog p := 
+  forall f,
+  ((well_typed p (get_func f p).1) *
+  ({subset FVTree (get_func f p).1 <= (get_func f p).2}))%type.
+
+
 Lemma fmap_cat e1 e2 t:
+  (forall x, x \in e1 -> closed x) ->
+  (forall x, x \in e2 -> closed x) ->
   size t = (size e1 + size e2)%N  ->
   fmap_of t (e1 ++ e2) =
   comp (fmap_of t e1) (fmap_of (drop (size e1) t) e2).
-Proof.
-  move=> E.
+Proof. Admitted.
+(*  move=> E.
   rewrite /fmap_of (foldr_monoid compA comp0e compe0); apply/congr1.
   rewrite -map_cat -{1}(cat_take_drop (size e1) t) zip_cat.
   apply/congr1/congr2=> //.
   - rewrite -{3}(cats0 e1) -{2}(cat_take_drop (size e1) t) zip_cat.
     by case: (drop _)=> /=; rewrite cats0.
 all: by rewrite size_takel // E -{1}(addn0 (size e1)) leq_add2l leq0n. 
-Qed.
+Qed.*)
 
-Theorem int_dev_Prog (p : Prog) (e1 e2 : seq Exp):
-  let: DEFINE n vs t := p in
+Theorem int_dev_Prog (p : Programm) (main : Prog) (e1 e2 : seq Exp) f:
+  let: (DEFINE _ vs main_t) := main in
   (size e1 + size e2)%N = size vs ->
   (forall x, x \in e1 -> closed x) ->
-  well_typed t ->
-  int_Prog p (e1 ++ e2) <> '0 ->
-  int_Prog p (e1 ++ e2) = int_Prog (dev_Prog p e1) e2.
+  (forall x, x \in e2 -> closed x) ->
+  well_typed_prog (main :: p) ->
+  well_typed (main :: p) main_t ->
+  correct (main :: p) f ->
+  forall n,
+  int_Prog n main (main :: p) (e1 ++ e2) <> '0 ->
+  int_Prog n main (main :: p) (e1 ++ e2) = 
+  int_Prog n (dev_Prog f (main :: p) e1) (main :: p) e2.
 Proof. 
-case: p=> /= _ l ?? H ??; rewrite -int_dev // -?fmap_cat //.
-have/eqP->: whole (fmap_of l e1, [::]) == fset0; last by rewrite max_set0.
-rewrite /whole /= fsetU_eq0 -?fsubset0.
-apply/andP; split; apply/fsubsetP=> x /imfset2P[? //] /codomf_fmap_of/H /eqP->.
-by case.
+case: main => /= ? l ? H ???? n ?.
+by rewrite fmap_cat //= => ?; rewrite -correct_dev // leq_max leqnn ?orbT.
 Qed.
 
 Definition x1  : Var := 1.
@@ -1214,23 +1238,62 @@ Definition no  : Val := '4.
 
 Notation "'If' c 'Then' t1 'Else' t2" := (COND c t1 t2) (at level 30).
 
-Definition example : Prog := 
-  DEFINE 1 [:: x1; x2] 
-    (If (CONS? x1) Then
-      (If (CONS? x2) Then
-        yes
-      Else no)
-    Else
-      (If (CONS? x2) Then
-        no
-      Else yes)).
+Definition cons_cons : Programm := 
+  [::
+    DEFINE 1 [:: x1; x2] 
+      (If (CONS? x1) Then
+        If (CONS? x2) Then
+          yes
+        Else no
+      Else
+        If (CONS? x2) Then
+          no
+        Else yes)
+  ].
 
-Lemma dev_example : 
-  dev_Prog example [:: CONS '3 '4] = 
+Lemma dev_cons_cons f: 
+  dev_Prog f cons_cons [:: CONS '3 '4] = 
   DEFINE 1 [:: x2] (If (CONS? x2) Then yes Else no).
-rewrite /example /= /fmap_of /= ?comp_var ?fsfun_with /= ?comp_var fsfun_withE.
+rewrite /cons_cons /= /fmap_of /= ?comp_var ?fsfun_with /= ?comp_var fsfun_withE.
 have->: x2 == x1 = false by slia.
 by rewrite ?emsubv /= ?emsubv.
 Qed.
 
+Definition h1 : Var := 3.
+Definition h2 : Var := 4.
+Definition t1 : Var := 5.
+Definition t2 : Var := 6.
+
+
+Definition eq_tree : Programm := 
+  [::
+    DEFINE 1 [:: x1; x2] (
+        If (CONS? x1) Then
+          (HT h1 t1 x1 (
+            If (CONS? x2) Then
+              (HT h2 t2 x2 (
+                If (EQA? h1 h2) Then
+                  CALL 1 [:: t1; t2]
+                Else no
+              ))
+            Else no
+          ))
+        Else 
+          If (CONS? x2) Then
+            no
+          Else 
+            If (EQA? x1 x2) Then 
+              yes
+            Else no
+      )
+  ].
+
+Definition deveq_tree f := iter 10 (dev eq_tree) f.
+Arguments deveq_tree : simpl never.
+
+Lemma dev_eq_tree f: 
+  dev_Prog (deveq_tree f) eq_tree [:: CONS '3 '4] = 
+  DEFINE 0 [::] (RET '0).
+Proof.
+rewrite /eq_tree /=.
 
