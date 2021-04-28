@@ -88,7 +88,7 @@ Inductive Tree :=
   | LET  of Var  & Exp  & Tree
   | COND of Cntr & Tree & Tree
   | HT   of Var & Var & Var & Tree
-  | CALL of FName & seq Var.
+  | CALL of FName & seq Exp.
 Coercion RET : Exp >-> Tree.
 
 Inductive Prog := DEFINE of FName & seq Var & Tree.
@@ -179,7 +179,7 @@ Fixpoint int (n : nat) (t : Tree) (e : Env) (p : Programm) : Exp :=
   | CALL f args => 
     if n is n'.+1 then
       let: (t, xs) := (get_func f p) in
-        int n' t (fmap_of xs (map e args)) p
+        int n' t (fmap_of xs (map (subst^~ e) args)) p
     else '0
   end.
 
@@ -212,14 +212,14 @@ Proof.
   by apply/orP; left; apply/existsP; exists [`L].
 Qed.
 
-Lemma domf_fmap_of (ks : seq Var) (vs : seq Exp) x:
+(*Lemma domf_fmap_of (ks : seq Var) (vs : seq Exp) x:
    size vs = size ks ->
    x \in finsupp (fmap_of ks vs) = (x \in ks).
 Proof. Admitted.
 
 Lemma codomf_fmap_of (ks : seq Var) (vs : seq Exp) x:
    x \in finsupp (fmap_of ks vs) -> (fmap_of ks vs x) \in vs.
-Proof. Admitted.
+Proof. Admitted.*)
 
 Fixpoint FVExp (e : Exp) : {fset Var} := 
   match e with
@@ -245,24 +245,23 @@ Fixpoint FVTree (t : Tree) : {fset Var} :=
   | LET v x t    => (FVExp x `|` FVTree t) `\ v
   | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
   | HT v u x t   => (FVExp x `|` FVTree t) `\ v `\ u
-  | CALL f xs    => seq_fset tt xs
+  | CALL f xs    => [fset x | y in xs, x in FVExp y]
   end.
 
 Definition closed_sub (e : Env) := 
   forall x, x \in finsupp e -> closed (e x).
 
 
-Lemma closed_subs e (env : Env): 
+(*Lemma closed_subs e (env : Env): 
   FVExp e `<=` finsupp env -> 
   (closed_sub env) -> closed e /s/ env.
 Proof.
-(*elim: e=> [[[]|[]]|]//=.
+elim: e=> [[[]|[]]|]//=.
 - move=> n; rewrite fsub1set /subst=>L. 
   rewrite -[VAR n]/(val [` L]) -Some_fnd /=; apply; by rewrite in_codomf.
 rewrite /closed; move=> ? IHe1 ? IHe2 /fsubUsetP[] *.
 by rewrite /closed/= fsetU_eq0 IHe1 // IHe2.
 Qed.*)
-Admitted.
 
 Lemma cntr_env_TRUE c env e: 
   cntr c env = TRUE e ->

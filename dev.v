@@ -246,7 +246,7 @@ Fixpoint VTree (t : Tree) : {fset Var} :=
   | LET v x t    => v |` (FVExp x `|` VTree t)
   | COND c t1 t2 => FVCntr c `|` VTree t1 `|` VTree t2
   | HT v u x t   => [fset v; u; x] `|`  (VTree t)
-  | CALL f xs    => seq_fset tt xs
+  | CALL f xs    => [fset x | y in xs, x in FVExp y]
   end.
 
 Definition maxvar (t : Tree) : Var := max_set (VTree t).
@@ -286,8 +286,8 @@ Definition caller (f : Var -> Tree -> Cenv -> Tree)
   (k : Var) (t : Tree) (e : Cenv) : Tree :=
   match t with
   | CALL g args => let: (t, xs) := get_func g p in
-     f (maxn k (maxvar t)) t (fmap_of xs (map e.1 args), e.2)
-  | _ => '0
+     f (maxn k (maxvar t)) t (fmap_of xs (map (subst^~ e.1) args), e.2)
+  | _  => f k t e
   end.
 
 
@@ -983,7 +983,7 @@ rewrite max_setU leq_max I' ?orbT.
 Qed.
 
 Definition correct (f : Var -> Tree -> Cenv -> Tree) := 
-  forall e1 e2 rs k n g args,
+  forall e1 e2 rs k g args n ,
   let: t := CALL g args in 
   int n t (comp e1 e2) p <> '0 ->
   well_typed t -> 
@@ -1025,8 +1025,9 @@ all: case: n=> // n.
   (do? case: ifP=> //)=> N1' N2'; apply/I; by rewrite ?inE N1' N2' I' orbT.
 move=> f l e1 e2 ? IH /=.
 case: (get_func f p)=> ? xs.
-have-> //: (fmap_of xs [seq e1 i | i <- l]) =  (fmap_of xs [seq e2 i | i <- l]).
-apply/congr1/eq_in_map=> ? H. apply/IH; by rewrite seq_fsetE.
+have-> //: (fmap_of xs [seq x /s/ e1 | x <- l]) =  (fmap_of xs [seq x /s/ e2 | x <- l]).
+apply/congr1/eq_in_map=> x H. apply/subst_fv=> y ?.
+apply/IH/imfset2P; exists x=> //; by exists y.
 Qed.
 
 Lemma int_maxvar (e1 e2 : Env) t n: 
@@ -1069,11 +1070,6 @@ Hypothesis well_typed_prog : forall f,
   ((well_typed (get_func f p).1) *
   ({subset FVTree (get_func f p).1 <= (get_func f p).2}))%type.
 
-Lemma whole_fmap {xs} {e : Env} {l rs}: 
-  whole (fmap_of xs (map e l), rs) `<=` 
-  whole (e, rs) `|` (seq_fset tt l).
-Proof. Admitted.
-
 Lemma fmap_of0 xs: fmap_of xs [::] = emsub.
 Proof. by case: xs. Qed.
 
@@ -1081,11 +1077,42 @@ Lemma fmap_ofcons v vs x xs: fmap_of (x :: xs) (v :: vs) =
   [fsfun fmap_of xs vs with x |-> v].
 Proof. by []. Qed.
 
-
-Lemma correct_dev f : 
-  correct f -> correct (dev f).
+Lemma whole_fmap {xs} {e : Env} {l rs}: 
+  whole (fmap_of xs (map (subst^~ e) l), rs) `<=` 
+  whole (e, rs) `|` [fset x | y in l, x in FVExp y].
 Proof.
-move=> corr * e1 e2 rs k t.
+rewrite /whole /= [(_ `|` _)`|` _]fsetUC fsetUA fsetSU //.
+apply/fsubsetP=> y /mem_whole_env [x].
+elim: xs l=> [l|b l' IHxs [/=|a l /=]]. 
+- rewrite /fmap_of /= . case: l=> //=; by rewrite finsupp0.
+- by rewrite fmap_of0 /= finsupp0.
+rewrite fmap_ofcons fsfun_withE; case: ifP=> [??|E].
+- move/(fsubsetP (whole_env_subst _ _)); rewrite ?inE=> /orP[|->].
+  - move=> ?; apply/orP; left; apply/imfset2P; exists a.
+    - by rewrite /= mem_head.
+   by exists y.  
+  by rewrite orbT.
+have /fsubsetP/[apply]:  
+  finsupp [fsfun fmap_of l' [seq x0 /s/ e | x0 <- l] with b |-> a /s/ e] `<=`
+  b |` finsupp (fmap_of l' [seq x0 /s/ e | x0 <- l]).
+- rewrite finsupp_with; case: ifP=> // ?. 
+  exact/(fsubset_trans (fsubD1set _ _ ))/fsubsetU1.
+rewrite ?inE E /==> /IHxs /[apply]; rewrite ?inE => /orP[/imfset2P[z I [w ? ->]]|->].
+- apply/orP; left. apply/imfset2P; exists z; first by rewrite ?inE I orbT.
+  by exists w.
+by rewrite orbT.
+Qed.
+
+Lemma int_dev f e1 e2 rs k t n: 
+  correct f ->
+  int n t (comp e1 e2) p <> '0 ->
+  well_typed t -> 
+  max_set (whole (e1, rs)) <= k ->
+  maxvar t <= k ->
+  ncontr_env e2 rs ->
+  int n t (comp e1 e2) p = int n (dev f k t (e1, rs)) e2 p.
+Proof.
+move=> corr; move: n. 
 elim: t e1 e2 rs k => // [/= +++++ n|/= v e t IHt e1 e2 rs k n|||].
 1,2: case: n=> //.
 - move=> *. by rewrite /int /= comp_env.
@@ -1187,26 +1214,56 @@ rewrite -?fsetUA fsetUS // fsubUset; apply/andP; split.
 - apply/(fsubset_trans H2); by rewrite fsetUA fsubsetUr.
 by rewrite fsetUA fsubsetUr.
 apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
+move=> g l e1 e2 ?? [] //= n *.
+by rewrite -corr // leq_max ?leqnn ?orbT //; apply/orP; left. 
+Qed.
 
-move=> g l e1 e2 ?? [] // n. rewrite {1 2}/int -/int /=.
-case E: (get_func g)=> [vs xs]; rewrite /maxvar => N /eqP ++ m2.
-move=> /= S  m1 ?.
+Lemma correct_dev f : 
+  correct f -> correct (caller (dev f)).
+Proof.
+move=> corr e1 e2 rs k g l /= [] //=.
+rewrite {1 2}/int /= -/int; case E: (get_func g p)=> [vs xs] //=.
+rewrite /maxvar => n N /eqP ++ m2; move=> /= S  m1 ?.
 have ?: well_typed vs by rewrite -[vs]/((vs, xs).1) -E well_typed_prog.
 have H: 
-  int n vs (fmap_of xs [seq comp e1 e2 i | i <- l]) p =
-  int n.+1 vs (comp (fmap_of xs [seq e1 i | i <- l]) e2) p.
-- rewrite int_not0 //; apply/int_freevar=> // x.
+  int n vs (fmap_of xs [seq x /s/ (comp e1 e2) | x <- l]) p =
+  int n.+1 vs (comp (fmap_of xs [seq x /s/ e1 | x <- l]) e2) p.
+- rewrite int_not0 //; apply/int_freevar => // x.
   case: (well_typed_prog g)=> ?; rewrite E /==> /[apply].
   elim: xs l {E N m2} S=> //= ?? IHxs [] //= ?? [/IHxs IH].
   rewrite ?fmap_ofcons ?inE ?comp_var ?fsfun_withE.
-  case: ifP=> //= ? /IH->; by rewrite comp_var.
-rewrite -corr -?H ?leq_max /maxvar ?leqnn ?orbT // => //=.
+  case: ifP=> //=; first by rewrite comp_env.
+  move=> ? /IH->; by rewrite comp_var.
+rewrite -int_dev ?leq_max ?leqnn ?orbT // -?H //.
 by apply/orP; left; apply/(max_set_le2 m1 m2)/(fsubset_trans whole_fmap).
 Qed.
 
-Lemma correct_devn f n: correct f ->
-  correct (iter n dev f).
-Proof. by elim: n=> // ? /[apply] /correct_dev. Qed.
+Definition id_call (k : Var) (t : Tree) (c : Cenv):= 
+  let: (e, _) := c in
+  match t with
+  | CALL g args => CALL g (map (subst^~ e) args)
+  | _ => t
+  end.
+
+
+Lemma correct_id: correct id_call.
+Proof.
+move=> ???? g l [] //= ? N /eqP S ? m *; rewrite /int/=-/int.
+case E: (get_func g p)=> [t xs]. 
+have ?: well_typed t by rewrite -[t]/((t, xs).1) -E well_typed_prog.
+apply/int_freevar=> //; rewrite -[t]/((t, xs).1) -?E=> ? /=.
+case: (well_typed_prog g)=> ? /[apply]; rewrite E /=.
+rewrite E /= in S.
+elim: xs l {E N m} S=> //= ?? IHxs [] //= ?? [/IHxs IH].
+rewrite ?fmap_ofcons ?inE ?comp_var ?fsfun_withE.
+case: ifP=> //; by rewrite comp_env.
+Qed.
+
+Definition devn n := iter n (caller \o dev) id_call.
+
+Lemma correct_devn n:
+  correct (devn n).
+Proof. elim: n=> [|?]; [exact/correct_id | exact/correct_dev]. Qed.
 
 End Spec.
 
@@ -1214,14 +1271,15 @@ Definition int_Prog n (main : Prog) (p : Programm) (xs : seq Exp) : Exp :=
   let: DEFINE f vs t := main in 
     int n t (fmap_of vs xs) p.
 
-Definition dev_Prog f (p : Programm) (xs : seq Exp) : Prog := 
-  match p with
-  | [::]   => DEFINE 0 [::] (RET '0)
-  | (DEFINE g vs t) :: _ => 
-    let: cenv := (fmap_of vs xs, [::]) in 
-    DEFINE g (drop (size xs) vs)
-        (dev p f (maxn (maxvar t) (max_set (whole cenv))) t cenv)
-  end.
+Definition corr_Prog f (main : Prog) (p : Programm) (xs : seq Exp) : Prog := 
+  let: DEFINE g vs t := main in 
+  let: cenv := (fmap_of vs xs, [::]) in 
+  let t' := (CALL g (map (Exp_Arg \o Arg_Var) vs)) in
+  DEFINE g (drop (size xs) vs) (f 
+    (maxn (maxvar t') (max_set (whole cenv)))
+   t'
+    cenv
+  ).
 
 Definition well_typed_prog p := 
   forall f,
@@ -1229,103 +1287,72 @@ Definition well_typed_prog p :=
   ({subset FVTree (get_func f p).1 <= (get_func f p).2}))%type.
 
 
+Lemma subst_closed e env: closed e -> e = e /s/ env.
+Proof.
+elim: e=> [[[]|? /eqP /= /(congr1 (fun x => #|` x|))]|? IH1 ? IH2] //=.
+- by rewrite cardfs1.
+rewrite /closed /= fsetU_eq0=> /andP[??].
+by apply/congr2; rewrite -(IH1, IH2).
+Qed.
+
 Lemma fmap_cat e1 e2 t:
   (forall x, x \in e1 -> closed x) ->
-  (forall x, x \in e2 -> closed x) ->
   size t = (size e1 + size e2)%N  ->
   fmap_of t (e1 ++ e2) =
   comp (fmap_of t e1) (fmap_of (drop (size e1) t) e2).
 Proof.
-Admitted.
-(*  move=> E.
-  rewrite /fmap_of (foldr_monoid compA comp0e compe0); apply/congr1.
-  rewrite -map_cat -{1}(cat_take_drop (size e1) t) zip_cat.
-  apply/congr1/congr2=> //.
-  - rewrite -{3}(cats0 e1) -{2}(cat_take_drop (size e1) t) zip_cat.
-    by case: (drop _)=> /=; rewrite cats0.
-all: by rewrite size_takel // E -{1}(addn0 (size e1)) leq_add2l leq0n. 
-Qed.*)
+elim: e1 t=> /= [?|?? IH [|?? c /=?]]; first by rewrite fmap_of0 comp0e drop0.
+- slia.
+rewrite ?fmap_ofcons; apply/substE=> v; rewrite comp_env /= ?fsfun_withE.
+case: ifP=> ?; first (rewrite -subst_closed //; exact/c/mem_head).
+rewrite IH ?comp_var // => [? I|]; last slia; apply/c; by rewrite ?inE I orbT.
+Qed.
 
-Theorem int_dev_Prog (p : Programm) (main : Prog) (e1 e2 : seq Exp) f:
+
+Lemma int_call n t f vs e p: 
+  well_typed_prog (DEFINE f vs t :: p) ->
+  int n t e (DEFINE f vs t :: p) = 
+  int n.+1 (CALL f [seq (Exp_Arg \o Arg_Var) i | i <- vs]) e (DEFINE f vs t :: p).
+Proof.
+move=> wf.
+case: n=> [/=|/=n]; rewrite ?eq_refl; first by case: t wf.
+apply: (int_freevar _ _ _ _ n.+1); move: (wf f); rewrite /=eq_refl/==> [[]] //.
+move=> _ /[swap] ? /[apply].
+elim: vs  {wf}=> //= ??.
+by rewrite fmap_ofcons ?inE fsfun_withE; case: ifP=> // /eqP->.
+Qed.
+
+Arguments int : simpl nomatch.
+
+
+Lemma int_corr_Prog (p : Programm) (main : Prog) (e1 e2 : seq Exp) f:
   let: (DEFINE _ vs main_t) := main in
   (size e1 + size e2)%N = size vs ->
   (forall x, x \in e1 -> closed x) ->
-  (forall x, x \in e2 -> closed x) ->
   well_typed_prog (main :: p) ->
-  well_typed (main :: p) main_t ->
   correct (main :: p) f ->
   forall n,
   int_Prog n main (main :: p) (e1 ++ e2) <> '0 ->
   int_Prog n main (main :: p) (e1 ++ e2) = 
-  int_Prog n (dev_Prog f (main :: p) e1) (main :: p) e2.
+  int_Prog n.+1 (corr_Prog f main p e1) (main :: p) e2.
 Proof. 
-case: main => /= ? l ? H ???? n ?.
-by rewrite fmap_cat //= => ?; rewrite -correct_dev // leq_max leqnn ?orbT.
+case: main => /= ? l ? H ?? corr n.
+rewrite fmap_cat //= => ?. 
+rewrite -corr -?int_call //= ?eq_refl /= ?size_map // leq_max ?leqnn ?orbT //.
 Qed.
 
-Definition x1  : Var := 1.
-Definition x2  : Var := 2.
-Definition yes : Val := '3.
-Definition no  : Val := '4.
-
-Notation "'If' c 'Then' t1 'Else' t2" := (COND c t1 t2) (at level 30).
-
-Definition cons_cons : Programm := 
-  [::
-    DEFINE 1 [:: x1; x2] 
-      (If (CONS? x1) Then
-        If (CONS? x2) Then
-          yes
-        Else no
-      Else
-        If (CONS? x2) Then
-          no
-        Else yes)
-  ].
-
-Lemma dev_cons_cons f: 
-  dev_Prog f cons_cons [:: CONS '3 '4] = 
-  DEFINE 1 [:: x2] (If (CONS? x2) Then yes Else no).
-rewrite /cons_cons /= /fmap_of /= ?comp_var ?fsfun_with /= ?comp_var fsfun_withE.
-have->: x2 == x1 = false by slia.
-by rewrite ?emsubv /= ?emsubv.
-Qed.
-
-Definition h1 : Var := 3.
-Definition h2 : Var := 4.
-Definition t1 : Var := 5.
-Definition t2 : Var := 6.
-
-
-Definition eq_tree : Programm := 
-  [::
-    DEFINE 1 [:: x1; x2] (
-        If (CONS? x1) Then
-          (HT h1 t1 x1 (
-            If (CONS? x2) Then
-              (HT h2 t2 x2 (
-                If (EQA? h1 h2) Then
-                  CALL 1 [:: t1; t2]
-                Else no
-              ))
-            Else no
-          ))
-        Else 
-          If (CONS? x2) Then
-            no
-          Else 
-            If (EQA? x1 x2) Then 
-              yes
-            Else no
-      )
-  ].
-
-Definition deveq_tree f := iter 10 (dev eq_tree) f.
-Arguments deveq_tree : simpl never.
-
-Lemma dev_eq_tree f: 
-  dev_Prog (deveq_tree f) eq_tree [:: CONS '3 '4] = 
-  DEFINE 0 [::] (RET '0).
+Theorem int_devn_Prog (p : Programm) (main : Prog) (e1 e2 : seq Exp) m:
+  let: (DEFINE _ vs main_t) := main in
+  (size e1 + size e2)%N = size vs ->
+  (forall x, x \in e1 -> closed x) ->
+  well_typed_prog (main :: p) ->
+  forall n,
+  int_Prog n main (main :: p) (e1 ++ e2) <> '0 ->
+  int_Prog n main (main :: p) (e1 ++ e2) = 
+  int_Prog n.+1 (corr_Prog (devn (main :: p) m) main p e1) (main :: p) e2.
 Proof.
-rewrite /eq_tree /=.
+case: main=> *. 
+apply/(int_corr_Prog p (DEFINE _ _ _))=> //.
+exact/correct_devn.
+Qed.
 
