@@ -277,10 +277,19 @@ Fixpoint dev (f : Var -> Tree -> Cenv -> Tree)
     | CFALSE e      => dev f k t2 e
     | CBOTH c e1 e2 => COND c (dev f k t1 e1) (dev f k t2 e2)
     end
-  | CALL g args =>
-    let: (t, xs) := get_func g p in
-      f (maxn k (maxvar t)) t (fmap_of xs (map e.1 args), e.2)
+  | CALL g args => f (maxn k (maxvar t)) t e
+    (*let: (t, xs) := get_func g p in
+      f (maxn k (maxvar t)) t (fmap_of xs (map e.1 args), e.2)*)
   end.
+
+Definition caller (f : Var -> Tree -> Cenv -> Tree) 
+  (k : Var) (t : Tree) (e : Cenv) : Tree :=
+  match t with
+  | CALL g args => let: (t, xs) := get_func g p in
+     f (maxn k (maxvar t)) t (fmap_of xs (map e.1 args), e.2)
+  | _ => '0
+  end.
+
 
 
 Lemma max_set0 : max_set fset0 = 0.
@@ -408,6 +417,15 @@ Proof. by apply/substE=> ?; rewrite ?comp_env. Qed.
 Lemma subst_var (v u : Var) (e : Exp): 
   v /s/ ([fsfun emsub with u |-> e]) = if v == u then e else v.
 Proof. by rewrite /= fsfun_withE emsubv. Qed.
+
+Lemma subst_fv e (e1 e2 : Env): 
+  (forall x, x \in FVExp e -> e1 x = e2 x) ->
+  e /s/ e1 = e /s/ e2.
+Proof.
+elim: e=> /= [[[]|?]|? IHe1 ? IHe2 H]//; first by (apply; rewrite ?inE).
+by apply/congr2; rewrite (IHe1, IHe2) // => ? I; rewrite H // ?inE I ?orbT.
+Qed.
+
 
 End SubstTh.
 
@@ -946,7 +964,7 @@ Qed.
 Fixpoint well_typed (t : Tree) : bool := 
   match t with 
   | RET _ => true
-  | LET v x t => well_typed t
+  | LET v x t => well_typed t && (v \notin FVExp x)
   | COND c t1 t2 =>  well_typed t1 && well_typed t2 
   | HT v u x t => [&& x != v, x != u, v != u & well_typed t]
   | CALL f xs => size xs == size (get_func f p).2
@@ -965,7 +983,8 @@ rewrite max_setU leq_max I' ?orbT.
 Qed.
 
 Definition correct (f : Var -> Tree -> Cenv -> Tree) := 
-  forall e1 e2 rs k t n, 
+  forall e1 e2 rs k n g args,
+  let: t := CALL g args in 
   int n t (comp e1 e2) p <> '0 ->
   well_typed t -> 
   max_set (whole (e1, rs)) <= k ->
@@ -974,60 +993,72 @@ Definition correct (f : Var -> Tree -> Cenv -> Tree) :=
   int n t (comp e1 e2) p = int n (f k t (e1, rs)) e2 p.
 
 Lemma int_freevar (e1 e2 : Env) t n: 
+  well_typed t ->
   (forall x, x \in FVTree t -> e1 x = e2 x) ->
   int n t e1 p = int n t e2 p.
 Proof.
-Admitted.
+elim: t e1 e2 n=> [??? n ? H *|??? IHt ?? n|c ? IHt1 ? IHt2 ++ n|?? v ? IHt e1 e2 n|++++ n].
+all: case: n=> // n.
+- apply/subst_fv=> *; exact/H.
+- move=> /andP[? /negbTE NI I]; apply/IHt=> // ? F; rewrite ?fsfun_withE.
+  case: ifP=> [/eqP E|N].
+  - apply/subst_fv=> ? I'; apply/I; rewrite /= ?inE I' /= andbT.
+    apply/negP=> /eqP E'; by rewrite E' NI in I'.
+  by apply/I; rewrite ?inE F N orbT.
+- case: c=> [[[a ?? /andP[??] I]|v e1 e2 /andP[??] I]|] /=.
+  - apply/IHt2=> // ? I'; apply/I; by rewrite ?inE I' orbT.
+  - have->: e1 v = e2 v by apply/I; rewrite ?inE eq_refl.
+    case E: (e2 v); [apply/IHt2 | apply/IHt1] => // ? I'; apply/I;
+    by rewrite ?inE I' orbT.
+  - move=> e e' e1 e2 /andP[??] I.
+    have->: (e /s/ e1 = e /s/ e2). 
+    - by apply/subst_fv=> ? I'; apply/I; rewrite ?inE I'.
+    case: (e /s/ e2)=> // [[[]|]] //= ?.
+    have->: (e' /s/ e1 = e' /s/ e2).
+    - by apply/subst_fv=> ? I'; apply/I; rewrite ?inE I' orbT.
+    case: (e' /s/ e2)=> // [[]] // [?]; case: ifP=> ?;
+    [apply/IHt1 | apply/IHt2] => // ? I'; apply/I; by rewrite ?inE I' ?orbT.
+- case/and4P=> N1 N2 ?? I /=.
+  have->: e1 v = e2 v.
+  - by apply/I=> /=; rewrite ?inE N1 N2 eq_refl /=.
+  case: (e2 v)=> // ??; apply/IHt=> // ? I'; rewrite ?fsfun_withE.
+  (do? case: ifP=> //)=> N1' N2'; apply/I; by rewrite ?inE N1' N2' I' orbT.
+move=> f l e1 e2 ? IH /=.
+case: (get_func f p)=> ? xs.
+have-> //: (fmap_of xs [seq e1 i | i <- l]) =  (fmap_of xs [seq e2 i | i <- l]).
+apply/congr1/eq_in_map=> ? H. apply/IH; by rewrite seq_fsetE.
+Qed.
 
 Lemma int_maxvar (e1 e2 : Env) t n: 
+  well_typed t ->
   (forall x, x <= maxvar t -> e1 x = e2 x) ->
   int n t e1 p = int n t e2 p.
 Proof.
-elim: t e1 e2 n=> [??? n *|??? IHt ?? n I|c ? IHt1 ? IHt2 ++ n|?? v ? IHt e1 e2 n I|++++ n].
-all: case: n=> // n /=.
-- exact/subst_max.
-- apply/IHt=> ?. rewrite ?fsfun_withE /maxvar/= => l; case:ifP=> [/eqP ?|?].
-  - apply/subst_max=> ?; rewrite /maxvar /= => m; apply/I.
-    by rewrite /maxvar /= ?max_setU ?leq_max m ?orbT.
-  by apply/I; rewrite /maxvar /= ?max_setU ?leq_max l ?orbT.
-- case: c=> [[[a ?? I]|v e1 e2 I]|] /=.
-  - apply/IHt2=> ?; rewrite /maxvar /= => I'; apply/I.
-    by rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-  - have->: e1 v = e2 v.
-    - apply/I; rewrite /maxvar /= ?max_setU ?leq_max.
-      by rewrite max_setin // /FVCntr /= ?inE.
-    by case E: (e2 v); [apply/IHt2 | apply/IHt1]; move=> ?; rewrite /maxvar /= =>I';
-    apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-  move=> e e' e1 e2 I.
-  have->: (e /s/ e1 = e /s/ e2).
-  - apply/subst_max=> ?; rewrite /maxvar /==> I'.
-    by apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-  case: (e /s/ e2)=> // [[[]|]] //= ?.
-  have->: (e' /s/ e1 = e' /s/ e2).
-  - apply/subst_max=> ?; rewrite /maxvar /==> I'.
-    by apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-  by case: (e' /s/ e2)=> // [[]] // [?]; case: ifP=> ?;
-  [apply/IHt1 | apply/IHt2]; move=> ?; rewrite /maxvar /= =>I';
-  apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-have->: e1 v = e2 v.
-- apply/I.
-  rewrite /maxvar /= ?max_setU ?leq_max [v <= max_set [fset v]]max_setin ?orbT //.
-  by rewrite ?inE.
-case: (e2 v)=> // ??; apply/IHt=> ?; rewrite /maxvar /= => I'.
-rewrite ?fsfun_withE; do? case: ifP=>//.
-by move=> *; apply/I; rewrite /maxvar /= ?max_setU ?leq_max I' ?orbT.
-move=> f l e1 e2 IH.
-case: (get_func f p)=> ? xs.
-have-> //: (fmap_of xs [seq e1 i | i <- l]) =  (fmap_of xs [seq e2 i | i <- l]).
-apply/congr1/eq_in_map=> ??. apply/IH.
-by rewrite /maxvar /= max_setin // mem_sort_keys.
+move=> wf H; apply/int_freevar=> // ? I; rewrite H // /maxvar max_setin //.
+elim: t I {wf H}=> //= [??? IH|?? IH1 ? IH2|???? IH]; rewrite ?inE.
+- case/andP=> ? /orP[|/IH]->; by rewrite ?orbT.
+- case/orP=> [/orP[|/IH1]|/IH2]->; by rewrite ?orbT.
+case/and3P=> ?? /orP[|/IH]->; by rewrite ?orbT.
 Qed.
+
+Arguments int: simpl nomatch.
 
 Lemma int_not0 n t e: 
   int n t e p <> '0 ->
   int n t e p = int n.+1 t e p.
-Proof. Admitted.
-
+Proof.
+elim: n t e p=> [[]|] // n IH [] //=.
+- move=> *; by rewrite IH.
+- move=> c ?? e ?; case: c=> //= [[[]??|v]|] //=; rewrite 1?IH //;
+  rewrite /int /= -/int.
+  - case E: (e v)=> ?; by rewrite IH.
+  move=> e1 e2 /=. case: (e1 /s/ e)=> //= [[]] // [] //.
+  case (e2 /s/ e)=> [] // [] // [] ??; case: ifP=> ??; by rewrite IH.
+- move=> ?? v ?; rewrite /int/= -/int=> e; case: (e v)=> // *.
+  by rewrite IH.
+move=> ????. rewrite {1 2 3}/int/=-/int. case: (get_func _ _)=> // ???.
+by rewrite IH.
+Qed.
 
 Lemma l k: (k.+2 == k.+1) = false.
 Proof. by apply/eqP=> /esym /n_Sn. Qed.
@@ -1063,7 +1094,7 @@ elim: t e1 e2 rs k => // [/= +++++ n|/= v e t IHt e1 e2 rs k n|||].
         [fsfun comp e1 e2 with v |-> e /s/ (comp e1 e2)].
   - apply/substE=> u; rewrite comp_env /= ?fsfun_withE.
     by case: ifP; rewrite -?[comp e1 e2 u]/(u /s/ (comp e1 e2)) comp_env.
-  move=> ? wf m1 m2 *. rewrite -IHt // -1?int_not0 //.
+  move=> ? /andP[??] m1 m2 *. rewrite -IHt // -1?int_not0 //.
   - apply/(max_set_le2 m2 m1)/(fsubset_trans whole_with)=> /=.
   - rewrite -?fsetUA fsetUS // fsubUset 1?fsetUA fsubsetUr -fsetUA.
     by rewrite fsetUC -fsetUA fsubsetU // fsetUC whole_subst orbT.
@@ -1118,7 +1149,7 @@ case E': (e1 e) => [[[]|y]//=|e3 e4] //=.
             v |-> Exp_Arg (k.+1 : Var),
             u |-> Exp_Arg (k.+2 : Var)]
          [fsfun e2 with k.+1 |-> e3, k.+2 |-> e4]) p.
-    apply/int_maxvar=> ??.
+    apply/int_maxvar=> // ??.
     - rewrite comp_var /= ?fsfun_withE; case: ifP.
       - by move/eqP->; rewrite eq_sym ev /= fsfun_with.
       case: ifP=> [/eqP-> UV|].
@@ -1160,16 +1191,16 @@ apply/(max_set_le m)=> /=; by rewrite fsubsetUr.
 move=> g l e1 e2 ?? [] // n. rewrite {1 2}/int -/int /=.
 case E: (get_func g)=> [vs xs]; rewrite /maxvar => N /eqP ++ m2.
 move=> /= S  m1 ?.
+have ?: well_typed vs by rewrite -[vs]/((vs, xs).1) -E well_typed_prog.
 have H: 
   int n vs (fmap_of xs [seq comp e1 e2 i | i <- l]) p =
   int n.+1 vs (comp (fmap_of xs [seq e1 i | i <- l]) e2) p.
-- rewrite int_not0 //; apply/int_freevar=> x.
+- rewrite int_not0 //; apply/int_freevar=> // x.
   case: (well_typed_prog g)=> ?; rewrite E /==> /[apply].
   elim: xs l {E N m2} S=> //= ?? IHxs [] //= ?? [/IHxs IH].
   rewrite ?fmap_ofcons ?inE ?comp_var ?fsfun_withE.
   case: ifP=> //= ? /IH->; by rewrite comp_var.
 rewrite -corr -?H ?leq_max /maxvar ?leqnn ?orbT // => //=.
-- by rewrite -[vs]/((vs, xs).1) -E well_typed_prog.
 by apply/orP; left; apply/(max_set_le2 m1 m2)/(fsubset_trans whole_fmap).
 Qed.
 
@@ -1204,7 +1235,8 @@ Lemma fmap_cat e1 e2 t:
   size t = (size e1 + size e2)%N  ->
   fmap_of t (e1 ++ e2) =
   comp (fmap_of t e1) (fmap_of (drop (size e1) t) e2).
-Proof. Admitted.
+Proof.
+Admitted.
 (*  move=> E.
   rewrite /fmap_of (foldr_monoid compA comp0e compe0); apply/congr1.
   rewrite -map_cat -{1}(cat_take_drop (size e1) t) zip_cat.
