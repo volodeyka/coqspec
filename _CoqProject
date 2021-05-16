@@ -9,5 +9,7 @@
 -arg -w -arg -deprecated-ssr-search
 -arg -w -arg -ambiguous-paths
 
+utilities.v
+substitution.v
 int.v
 dev.v

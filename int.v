@@ -1,5 +1,6 @@
 From mathcomp Require Import ssreflect ssrnat eqtype ssrbool ssrfun seq.
 From mathcomp Require Import finmap choice finfun fintype.
+From coqspec Require Import utilities substitution.
 From deriving Require Import deriving.
 
 Set Implicit Arguments.
@@ -7,75 +8,6 @@ Unset Printing Implicit Defensive.
 
 Open Scope fmap_scope.
 Open Scope fset_scope.
-Definition Atom  := nat.
-Definition Var  := nat.
-Definition FName := nat.
-
-Inductive Val := ATOM of Atom.
-Notation "''' e" := (ATOM e) (at level 0).
-
-Definition val_indDef := [indDef for Val_rect].
-Canonical val_indType := IndType Val val_indDef.
-
-Definition val_eqMixin := [derive eqMixin for Val].
-Canonical val_eqType := EqType Val val_eqMixin.
-Definition val_choiceMixin := [derive choiceMixin for Val].
-Canonical val_choiceType := Eval hnf in ChoiceType Val val_choiceMixin.
-
-Inductive Arg := 
-  | Arg_Val of Val
-  | Arg_Var of Var.
-Coercion Arg_Val : Val >-> Arg.
-Coercion Arg_Var : Var >-> Arg.
-
-Definition arg_indDef := [indDef for Arg_rect].
-Canonical arg_indType := IndType Arg arg_indDef.
-
-Definition eq_arg a b := 
-  match a, b with
-  | Arg_Val 'a, Arg_Val 'b => a == b
-  | Arg_Var x, Arg_Var y => x == y
-  | _, _ => false
-  end.
-
-Lemma eqargP : Equality.axiom eq_arg.
-Proof. 
-by case=> [[]?[[]|]|?[]]?/=; try (by constructor); apply/(iffP eqP)=> [|[]]->. 
-Qed.
-
-Canonical arg_eqMixin := EqMixin eqargP.
-Canonical arg_eqType := Eval hnf in EqType Arg arg_eqMixin.
-
-Definition arg_choiceMixin := [derive choiceMixin for Arg].
-Canonical arg_choiceType := Eval hnf in ChoiceType Arg arg_choiceMixin.
-
-Inductive Exp :=
-  | Exp_Arg of Arg
-  | CONS of Exp & Exp.
-Coercion Exp_Arg : Arg >-> Exp.
-
-Fixpoint eq_exp a b := 
-  match a, b with
-  | Exp_Arg a,  Exp_Arg b  => a == b
-  | CONS e1 e2, CONS e3 e4 => eq_exp e1 e3 && eq_exp e2 e4
-  | _,          _          => false
-  end.
-
-Lemma eqexpP : Equality.axiom eq_exp.
-Proof.
-elim=> [?[]*|? IHe1 ? IHe2[]]/= *; first by apply/(iffP eqP)=> [|[]]//->.
-1,2: by constructor.
-by apply/(iffP andP)=> [][]/IHe1->/IHe2->.
-Qed.
-
-Canonical exp_eqMixin := EqMixin eqexpP.
-Canonical exp_eqType := Eval hnf in EqType Exp exp_eqMixin.
-
-Definition exp_indDef := [indDef for Exp_rect].
-Canonical exp_indType := IndType Exp exp_indDef.
-
-Definition exp_choiceMixin := [derive choiceMixin for Exp].
-Canonical exp_choiceType := Eval hnf in ChoiceType Exp exp_choiceMixin.
 
 Inductive Cntr :=
   | CONStest of Arg
@@ -83,50 +15,58 @@ Inductive Cntr :=
 Notation "CONS?" := (CONStest) (only parsing).
 Notation "'EQA?'"  := (ATOMtest) (only parsing).
 
+Definition FVCntr (c : Cntr) : {fset Var} := 
+  match c with
+  | EQA? x y => FVExp x `|` FVExp y
+  | CONS? x  => FVArg x
+  end.
+
 Inductive Tree := 
   | RET  of Exp
   | LET  of Var  & Exp  & Tree
   | COND of Cntr & Tree & Tree
   | HT   of Var & Var & Var & Tree
-  | CALL of FName & seq Var.
+  | CALL of FName & seq Exp.
 Coercion RET : Exp >-> Tree.
 
-Inductive Prog := DEFINE of FName & seq Var & Tree.
-
-Definition Programm := seq Prog.
-
-Definition Env := {fsfun Var -> Exp for id}.
-
-(*Definition getExp (b : Bind) : Exp := 
-  let: _ ↦ c := b in c.
-
-Definition ofind {T} a (s : seq T) := 
-  ohead [seq x <- s | a x].*)
-
-Fixpoint subst (e : Exp) (env : Env) : Exp := 
-  match e with 
-  | CONS e1 e2 => CONS (subst e1 env) (subst e2 env)
-  | 'a         => 'a
-  | (Exp_Arg (Arg_Var v))      =>  env v 
+Fixpoint VTree (t : Tree) : {fset Var} :=
+  match t with
+  | RET e        => FVExp e
+  | LET v x t    => v |` (FVExp x `|` VTree t)
+  | COND c t1 t2 => FVCntr c `|` VTree t1 `|` VTree t2
+  | HT v u x t   => [fset v; u; x] `|`  (VTree t)
+  | CALL f xs    => [fset x | y in xs, x in FVExp y]
   end.
 
-Notation "e '/s/' env" := (subst e env) (at level 1, left associativity).
+Fixpoint FVTree (t : Tree) : {fset Var} :=
+  match t with
+  | RET e        => FVExp e
+  | LET v x t    => (FVExp x `|` FVTree t) `\ v
+  | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
+  | HT v u x t   => (FVExp x `|` FVTree t) `\ v `\ u
+  | CALL f xs    => [fset x | y in xs, x in FVExp y]
+  end.
 
-Arguments subst : simpl nomatch.
+Definition maxvar (t : Tree) : Var := max_set (VTree t).
+
+Lemma subst_max (e1 e2 : Env) (e : Exp) : 
+  (forall x, x <= maxvar e -> e1 x = e2 x) ->
+  e /s/ e1 = e /s/ e2.
+Proof.
+elim: e=> [[[]|?]|? IHe1 ? IHe2 I] //=; first apply.
+- rewrite /maxvar /=; apply/max_setin; by rewrite ?inE.
+  by rewrite IHe1 ?IHe2 //; move=> ? I'; apply/I; rewrite /maxvar /=;
+rewrite max_setU leq_max I' ?orbT.
+Qed.
+
+Inductive Def := DEFINE of FName & seq Var & Tree.
+
+Definition Prog := seq Def.
 
 Inductive Branch := 
   | TRUE  of Env
   | FALSE of Env
   | ERR.
-
-Definition csub (e1 : Env) (e2 : Env) : Env := 
-  [fsfun x in finsupp e1 => subst (e1 x) e2].
-
-Definition comp (e1 e2 : Env) : Env := 
-  [fsfun x in (finsupp e1 `|` finsupp e2) => (e1 x) /s/ e2].
-
-Definition emsub : Env := [fsfun for (id : Var -> Exp)].
-
 
 Definition cntr (c : Cntr) (e : Env) : Branch := 
   match c with
@@ -141,128 +81,64 @@ Definition cntr (c : Cntr) (e : Env) : Branch :=
     else FALSE e
   end.
 
-Fixpoint get_func (f : FName) (p : Programm) : (Tree * seq Var)%type := 
+Fixpoint get_func (f : FName) (p : Prog) : (Tree * seq Var)%type := 
   match p with 
-  | [::]                  => (RET '0, [::])
+  | [::]                  => (RET ERROR, [::])
   | (DEFINE g xs t) :: ps => 
     if f == g then (t, xs)
     else get_func f ps
   end.
 
-Definition fmap_of (ks : seq Var) (vs : seq Exp) : Env :=
-  foldr (fun '(v, x) a => [fsfun a with v |-> x]) emsub (zip ks vs).
-
-Fixpoint int (n : nat) (t : Tree) (e : Env) (p : Programm) : Exp := 
+Fixpoint int (n : nat) (t : Tree) (e : Env) (p : Prog) : Exp := 
   match t with
   | RET x         => 
     if n is n'.+1 then 
       subst x e
-    else '0
+    else ERROR
   | LET v x t     => 
     if n is n'.+1 then
       int n' t  [fsfun e with v |-> x /s/ e] p
-    else '0
+    else ERROR
   | COND c t' t'' => 
     if n is n'.+1 then
       match cntr c e with
       | TRUE e'   => int n' t'  e'  p
       | FALSE e'' => int n' t'' e'' p
-      | ERR       => '0
+      | ERR       => ERROR
       end
-    else '0
+    else ERROR
   | HT v u x t => 
     if n is n'.+1 then
       if x /s/ e is CONS a b then 
         int n' t [fsfun e with v |-> a, u |-> b] p
-      else '0
-    else '0
+      else ERROR
+    else ERROR
   | CALL f args => 
     if n is n'.+1 then
       let: (t, xs) := (get_func f p) in
-        int n' t (fmap_of xs (map e args)) p
-    else '0
+        int n' t (mkEnv xs (map (subst^~ e) args)) p
+    else ERROR
   end.
 
-(*Definition int_to_step (s1 s2 : State) (p : Programm) := 
-  let: (t, e) := s1 in
-  int t e p = s2.
-
-Inductive int_to_steps (p : Programm) : State -> State -> Prop := 
-  | Base s : int_to_steps p s s
-  | Step s1 s2 : int_to_step s1 s2 p -> int_to_steps p s1 s2.
-
-Definition interpret_to (p : Programm) s e : Prop :=
-  ((e <> '0) *
-  (int_to_steps p s (RET e, emsub)))%type.
-
-Notation "s '-(' p ')-->' e" := (interpret_to p s e) (at level 30).*)
-
-(*Definition int_Prog (f : Prog) (e : seq Exp) := 
-  let: DEFINE _ vs t := f in
-  int t (fmap_of vs e).*)
-
-Lemma l (K V : choiceType) (k : K) (v x : V) (f : {fmap K -> V}) : 
-  x \in codomf f.[k <- v] -> (x \in codomf f) || (v == x).
-Proof. 
-  rewrite ?inE=> /existsP[[y I /eqP H]] . 
-  move/eqP: (congr1 Some H); rewrite Some_fnd fnd_set /=.
-  move: I {H}; rewrite ?inE; case: ifP=> /= [?? /eqP[->]| ? L].
-  - by rewrite eq_refl orbT.
-  rewrite -[y]/(val [`L]) -Some_fnd=> /eqP[/eqP?].
-  by apply/orP; left; apply/existsP; exists [`L].
+Lemma aux_CONS e a: 
+  aux e (FVCntr (CONS? a)) = FVExp (a /s/ e).
+Proof.
+move=> /=; have->: FVArg a = FVExp a by case: a=> [[]|].
+exact/aux_FVExp.
 Qed.
 
-Lemma domf_fmap_of (ks : seq Var) (vs : seq Exp) x:
-   size vs = size ks ->
-   x \in finsupp (fmap_of ks vs) = (x \in ks).
-Proof. Admitted.
+Lemma aux_EQA e a1 a2: 
+  aux e (FVCntr (EQA? a1 a2)) = FVExp (a1 /s/ e) `|` FVExp (a2 /s/ e).
+Proof. by move=> /=; rewrite auxU ?aux_FVExp. Qed.
 
-Lemma codomf_fmap_of (ks : seq Var) (vs : seq Exp) x:
-   x \in finsupp (fmap_of ks vs) -> (fmap_of ks vs x) \in vs.
-Proof. Admitted.
-
-Fixpoint FVExp (e : Exp) : {fset Var} := 
-  match e with
-  | CONS e1 e2 => FVExp e1 `|` FVExp e2
-  | (Exp_Arg (Arg_Var v))      => [fset v]
-  | _          => fset0
-  end.
-
-Definition closed e := FVExp e == fset0.
-
-Definition FVArg (a : Arg) := 
-  if a is (Arg_Var x) then [fset x] else fset0.
-
-Definition FVCntr (c : Cntr) : {fset Var} := 
-  match c with
-  | EQA? x y => FVExp x `|` FVExp y
-  | CONS? x  => FVArg x
-  end.
-
-Fixpoint FVTree (t : Tree) : {fset Var} :=
-  match t with
-  | RET e        => FVExp e
-  | LET v x t    => (FVExp x `|` FVTree t) `\ v
-  | COND c t1 t2 => FVCntr c `|` FVTree t1 `|` FVTree t2
-  | HT v u x t   => (FVExp x `|` FVTree t) `\ v `\ u
-  | CALL f xs    => seq_fset tt xs
-  end.
-
-Definition closed_sub (e : Env) := 
-  forall x, x \in finsupp e -> closed (e x).
-
-
-Lemma closed_subs e (env : Env): 
-  FVExp e `<=` finsupp env -> 
-  (closed_sub env) -> closed e /s/ env.
+Lemma auxE e c rs: 
+  aux e (FVCntr c) `<=` FVCntr c `|` whole (e, rs).
 Proof.
-(*elim: e=> [[[]|[]]|]//=.
-- move=> n; rewrite fsub1set /subst=>L. 
-  rewrite -[VAR n]/(val [` L]) -Some_fnd /=; apply; by rewrite in_codomf.
-rewrite /closed; move=> ? IHe1 ? IHe2 /fsubUsetP[] *.
-by rewrite /closed/= fsetU_eq0 IHe1 // IHe2.
-Qed.*)
-Admitted.
+apply/fsubsetP=> y /mem_aux[x I]. 
+rewrite -[e x]/((Exp_Arg (Arg_Var x)) /s/ e)=> /(fsubsetP (whole_subst _ rs _)).
+move=> /=; rewrite 2?inE => /orP[/eqP->|H]; first by rewrite inE I.
+by rewrite inE H orbT.
+Qed.
 
 Lemma cntr_env_TRUE c env e: 
   cntr c env = TRUE e ->
@@ -272,19 +148,6 @@ case: c=> /= [?|??]; case: (_ /s/ env)=> //.
 - by move=> ?? [].
 by case=> // [[]] ?; case: (_ /s/ _)=> // [[]] // [] ?; case: ifP=> // ? [].
 Qed.
-(*case: c=> [/= a v u |/= ??].
-- case: a; rewrite /subst=> [[]]; first move=> []//.
-  move=> n; case: (boolP (VAR n \in domf env))=>[L|/not_fnd->//].
-  rewrite -[VAR n]/(val [` L]) -Some_fnd /=.
-  case E: (env.[_])=> // [][] <- H.
-  have: closed (env.[L]); first (by apply/H; rewrite ?in_codomf).
-  rewrite E /= /closed /= fsetU_eq0=> /andP[??].
-  rewrite ?dom_setf (fsubset_trans (fsubsetU1 _ _) (fsubsetU1 _ _)).
-  by split=> // ? /l /orP[/l/orP[/H|/eqP<-]|/eqP<-].
-case: (_ /s/ _) => // [[[]|]|?]; try by move=> ?[->].
-- case: (_ /s/ _)=> //[[[]|??[->]]|???[->]]// ??.
-by case: ifP=> // ? [->].
-Qed.*)
 
 Lemma cntr_env_FALSE c env e: 
   cntr c env = FALSE e -> e = env.
@@ -294,38 +157,90 @@ case=> //[][]. case: (_ /s/ _)=> //[][]//[] ??.
 by case:ifP=> // ?[->].
 Qed.
 
-(*Lemma closed_int t e: 
-  FVTree t `<=` finsupp e -> 
-  closed_sub e ->
-  closed (int t e).
-Proof.
-(*elim: t e => [|v > IHt ? /= /fsubsetP H C|] //=.
-- elim=> [[[]//|[]/= n ?]|/=]. 
-  rewrite fsub1set=> L; rewrite -[VAR n]/(val [` L]) -Some_fnd /=.
-  apply; by rewrite in_codomf.
-- rewrite /closed => ? IHt1 ? IHt2 ? /fsubUsetP[]*. 
-  by rewrite fsetU_eq0 IHt1 // IHt2.
-- rewrite IHt // ?dom_setf.
-  - apply/fsubsetP=> ?; rewrite ?inE; case: (boolP (_ == v))=> //= N I.
-    by apply/H; rewrite ?inE N I /= orbT.
-  move=> ? /l /orP[/C//|/eqP<-]; apply/closed_subs; rewrite ?dom_setf.
-  - apply/fsubsetP=> ?; rewrite ?inE; case: (boolP (_ == v))=> //= N I.
-    by apply/H; rewrite ?inE N I.
-  by move=> ? /l=> /orP[/C|/eqP<-].
-move=> c ? IHt ? IHt1 e; case E: (cntr c e); move: E=> //.
-- move/cntr_env_TRUE=> H /fsubUsetP[/fsubUsetP[???]] /H[? sub] //.
-  - apply/IHt=> //. exact/(fsubset_trans _ sub).
-move/cntr_env_FALSE/eqP-> => /fsubUsetP[??] *; exact/IHt1.
-Qed.*) Admitted.
+Section IntSpec.
 
-Theorem closed_int_Prog t vs f e: 
-  all closed e -> size e = size vs ->
-  {subset FVTree t <= vs} ->
-  closed (int_Prog (DEFINE f vs t) e).
+Context {p : Prog}.
+
+Fixpoint well_typed (t : Tree) : bool := 
+  match t with 
+  | RET _ => true
+  | LET v x t => well_typed t && (v \notin FVExp x)
+  | COND c t1 t2 =>  well_typed t1 && well_typed t2 
+  | HT v u x t => [&& x != v, x != u, v != u & well_typed t]
+  | CALL f xs => size xs == size (get_func f p).2
+  end.
+
+Lemma int_freevar (e1 e2 : Env) t n: 
+  well_typed t ->
+  (forall x, x \in FVTree t -> e1 x = e2 x) ->
+  int n t e1 p = int n t e2 p.
 Proof.
-move=> /= /allP I ? S; apply/closed_int=> [|? /codomf_fmap_of /I]//.
-apply/fsubsetP=> ? /S; by rewrite domf_fmap_of. 
-Qed.*)
+elim: t e1 e2 n=> [??? n ? H *|??? IHt ?? n|c ? IHt1 ? IHt2 ++ n|?? v ? IHt e1 e2 n|++++ n].
+all: case: n=> // n.
+- apply/subst_fv=> *; exact/H.
+- move=> /andP[? /negbTE NI I]; apply/IHt=> // ? F; rewrite ?fsfun_withE.
+  case: ifP=> [/eqP E|N].
+  - apply/subst_fv=> ? I'; apply/I; rewrite /= ?inE I' /= andbT.
+    apply/negP=> /eqP E'; by rewrite E' NI in I'.
+  by apply/I; rewrite ?inE F N orbT.
+- case: c=> [[[a ?? /andP[??] I]|v e1 e2 /andP[??] I]|] /=.
+  - apply/IHt2=> // ? I'; apply/I; by rewrite ?inE I' orbT.
+  - have->: e1 v = e2 v by apply/I; rewrite ?inE eq_refl.
+    case E: (e2 v); [apply/IHt2 | apply/IHt1] => // ? I'; apply/I;
+    by rewrite ?inE I' orbT.
+  - move=> e e' e1 e2 /andP[??] I.
+    have->: (e /s/ e1 = e /s/ e2). 
+    - by apply/subst_fv=> ? I'; apply/I; rewrite ?inE I'.
+    case: (e /s/ e2)=> // [[[]|]] //= ?.
+    have->: (e' /s/ e1 = e' /s/ e2).
+    - by apply/subst_fv=> ? I'; apply/I; rewrite ?inE I' orbT.
+    case: (e' /s/ e2)=> // [[]] // [?]; case: ifP=> ?;
+    [apply/IHt1 | apply/IHt2] => // ? I'; apply/I; by rewrite ?inE I' ?orbT.
+- case/and4P=> N1 N2 ?? I /=.
+  have->: e1 v = e2 v.
+  - by apply/I=> /=; rewrite ?inE N1 N2 eq_refl /=.
+  case: (e2 v)=> // ??; apply/IHt=> // ? I'; rewrite ?fsfun_withE.
+  (do? case: ifP=> //)=> N1' N2'; apply/I; by rewrite ?inE N1' N2' I' orbT.
+move=> f l e1 e2 ? IH /=.
+case: (get_func f p)=> ? xs.
+have-> //: (mkEnv xs [seq x /s/ e1 | x <- l]) =  (mkEnv xs [seq x /s/ e2 | x <- l]).
+apply/congr1/eq_in_map=> x H. apply/subst_fv=> y ?.
+apply/IH/imfset2P; exists x=> //; by exists y.
+Qed.
+
+Lemma int_maxvar (e1 e2 : Env) t n: 
+  well_typed t ->
+  (forall x, x <= maxvar t -> e1 x = e2 x) ->
+  int n t e1 p = int n t e2 p.
+Proof.
+move=> wf H; apply/int_freevar=> // ? I; rewrite H // /maxvar max_setin //.
+elim: t I {wf H}=> //= [??? IH|?? IH1 ? IH2|???? IH]; rewrite ?inE.
+- case/andP=> ? /orP[|/IH]->; by rewrite ?orbT.
+- case/orP=> [/orP[|/IH1]|/IH2]->; by rewrite ?orbT.
+case/and3P=> ?? /orP[|/IH]->; by rewrite ?orbT.
+Qed.
+
+Arguments int: simpl nomatch.
+
+Lemma int_not0 n t e: 
+  int n t e p <> ERROR ->
+  int n t e p = int n.+1 t e p.
+Proof.
+elim: n t e p=> [[]|] // n IH [] //=.
+- move=> *; by rewrite IH.
+- move=> c ?? e ?; case: c=> //= [[[]??|v]|] //=; rewrite 1?IH //;
+  rewrite /int /= -/int.
+  - case E: (e v)=> ?; by rewrite IH.
+  move=> e1 e2 /=. case: (e1 /s/ e)=> //= [[]] // [] //.
+  case (e2 /s/ e)=> [] // [] // [] ??; case: ifP=> ??; by rewrite IH.
+- move=> ?? v ?; rewrite /int/= -/int=> e; case: (e v)=> // *.
+  by rewrite IH.
+move=> ????. rewrite {1 2 3}/int/=-/int. case: (get_func _ _)=> // ???.
+by rewrite IH.
+Qed.
+
+End IntSpec.
+
 
 
 
