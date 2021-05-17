@@ -581,38 +581,3 @@ apply/(int_spec p (DEFINE _ _ _))=> //.
 exact/correct_devn.
 Qed.
 
-Definition x1  : Var := 1.
-Definition x2  : Var := 2.
-Definition yes : Val := '3.
-Definition no  : Val := '4.
-Definition h1 : Var := 3.
-Definition h2 : Var := 4.
-Definition t1 : Var := 5.
-Definition t2 : Var := 6.
-
-Notation "'If' c 'Then' t1 'Else' t2" := (COND c t1 t2) (at level 100).
-Notation "h : t <- x" := (HT h t x) (at level 10).
-
-
-(*Arguments calling : simpl never.*)
-
-Definition eq_tree : Def := 
-    DEFINE 1 [:: x1; x2] (
-        If (CONS? x1) Then
-          h1 : t1 <- x1 (
-            If (CONS? x2) Then
-              h2 : t2 <- x2 (
-                If (EQA? h1 h2) Then
-                  CALL 1 [:: Exp_Arg (Arg_Var t1); Exp_Arg (Arg_Var t2)]
-                Else no
-              )
-            Else no
-          )
-        Else 
-          If (CONS? x2) Then
-            no
-          Else 
-            If (EQA? x1 x2) Then 
-              yes
-            Else no
-      ).

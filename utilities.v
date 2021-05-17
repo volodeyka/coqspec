@@ -108,6 +108,11 @@ Definition max_set (f : seq nat) : nat :=
 Lemma max_set0 : max_set fset0 = 0.
 Proof. by []. Qed.
 
+Lemma max_set1 x: max_set [fset x] = x.
+Proof. 
+by rewrite /max_set enum_fsetE enum_fset1.
+Qed.
+
 Lemma max_setin g x: 
   x \in g -> x <= max_set g.
 Proof.
