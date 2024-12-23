@@ -1,4 +1,4 @@
-# Verified Specifier of S-Graph Language
+# Verified SuperCompiler of S-Graph Language
 
 Verification of a partial evaluation algorithm for S-Graph in Coq. The algorithm was taken from "https://link.springer.com/chapter/10.1007/3-540-57264-3_34"
 
